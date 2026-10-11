@@ -1,0 +1,15 @@
+# build outputs
+/build*/
+/dist/
+/out/
+*.dSYM/
+CMakeUserPresets.json
+
+# test artefacts (clip, FLV files, logs, last-run.json)
+/tests/results/
+
+# editors and OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
