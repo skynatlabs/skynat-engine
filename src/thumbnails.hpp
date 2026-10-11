@@ -5,6 +5,11 @@
 // the frame (on the graphics thread), copied to a staging surface, and read
 // back one frame later so the GPU is never stalled.
 //
+// Sent as RGBA, or — when asked — as I420 (full-range BT.709, 1.5 bytes a
+// pixel instead of 4), and optionally only when the picture changed since
+// the last one sent for that input (a still picture or a colour costs
+// nothing after its first).
+//
 // Copyright (C) 2026 Skynat
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
@@ -14,6 +19,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <vector>
 
 namespace skynat {
 
@@ -24,7 +30,8 @@ public:
 	explicit Thumbnails(Writer &writer);
 	~Thumbnails();
 
-	void enable(uint32_t width, uint32_t height, double fps);
+	enum Format : uint8_t { RGBA = 0, I420 = 1 };
+	void enable(uint32_t width, uint32_t height, double fps, Format format = RGBA, bool only_changes = false);
 	void disable();
 	bool enabled() const { return enabled_; }
 
@@ -34,6 +41,9 @@ public:
 	void clear();
 
 	uint64_t sent() const { return sent_; }
+	uint64_t unchanged() const { return unchanged_; }
+	Format format() const { return format_; }
+	bool only_changes() const { return only_changes_; }
 	uint32_t width() const { return width_; }
 	uint32_t height() const { return height_; }
 	double fps() const { return interval_ > 0.0 ? 1.0 / interval_ : 0.0; }
@@ -46,6 +56,7 @@ private:
 		gs_texrender_t *big = nullptr; // the scene at up to 4x the thumbnail, made smaller by area
 		gs_stagesurf_t *stage = nullptr;
 		bool staged = false;
+		std::vector<uint8_t> last; // the pixels last sent (only_changes)
 	};
 
 	static void tick_cb(void *param, float seconds);
@@ -53,6 +64,7 @@ private:
 	void on_tick(float seconds);
 	void on_rendered();
 	void free_item_gpu(Item &item);
+	void pack(const uint8_t *data, uint32_t linesize);
 	void attach_view(uint32_t id, Item &item);
 
 	Writer &writer_;
@@ -69,6 +81,10 @@ private:
 	uint64_t frame_ = 0;
 	uint64_t done_frame_ = ~0ull;
 	uint64_t sent_ = 0;
+	uint64_t unchanged_ = 0;
+	Format format_ = RGBA;
+	bool only_changes_ = false;
+	std::vector<uint8_t> pixels_; // one thumbnail's pixels, packed (reused)
 };
 
 } // namespace skynat

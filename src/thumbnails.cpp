@@ -12,6 +12,7 @@
 #include <graphics/vec4.h>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 namespace skynat {
@@ -108,20 +109,24 @@ void Thumbnails::clear()
 		remove(id);
 }
 
-void Thumbnails::enable(uint32_t width, uint32_t height, double fps)
+void Thumbnails::enable(uint32_t width, uint32_t height, double fps, Format format, bool only_changes)
 {
 	if (enabled_)
 		disable();
 	width_ = width ? width : 256;
 	height_ = height ? height : 144;
 	interval_ = fps > 0.0 ? 1.0 / fps : 0.5;
+	format_ = format;
+	only_changes_ = only_changes;
 	elapsed_ = interval_; // first pictures straight away
 	view_ = obs_view_create();
 	std::vector<std::pair<uint32_t, Item>> copies;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		for (auto &kv : items_)
+		for (auto &kv : items_) {
+			kv.second.last.clear(); // the first picture after (re)enabling always goes
 			copies.emplace_back(kv.first, kv.second);
+		}
 		enabled_ = true;
 	}
 	for (auto &c : copies)
@@ -155,6 +160,36 @@ void Thumbnails::disable()
 			obs_view_set_source(view_, c, nullptr);
 		obs_view_destroy(view_);
 		view_ = nullptr;
+	}
+}
+
+// The staged picture, packed: RGBA rows, or I420 — full-range BT.709 (the
+// standard coefficients), each chroma sample from the 2x2 pixels it covers.
+void Thumbnails::pack(const uint8_t *data, uint32_t linesize)
+{
+	const uint32_t w = width_, h = height_;
+	if (format_ != I420) {
+		pixels_.resize((size_t)w * h * 4);
+		for (uint32_t y = 0; y < h; y++)
+			std::memcpy(pixels_.data() + (size_t)y * w * 4, data + (size_t)y * linesize, (size_t)w * 4);
+		return;
+	}
+	const uint32_t cw = w / 2, ch = h / 2;
+	pixels_.resize((size_t)w * h + 2 * (size_t)cw * ch);
+	uint8_t *Y = pixels_.data(), *U = Y + (size_t)w * h, *V = U + (size_t)cw * ch;
+	for (uint32_t y = 0; y < h; y++) {
+		const uint8_t *p = data + (size_t)y * linesize;
+		for (uint32_t x = 0; x < w; x++, p += 4)
+			Y[(size_t)y * w + x] = (uint8_t)((54 * p[0] + 183 * p[1] + 19 * p[2] + 128) >> 8);
+	}
+	for (uint32_t y = 0; y < ch; y++) {
+		const uint8_t *a = data + (size_t)(2 * y) * linesize, *b = a + linesize;
+		for (uint32_t x = 0; x < cw; x++, a += 8, b += 8) {
+			const int r = a[0] + a[4] + b[0] + b[4], g = a[1] + a[5] + b[1] + b[5], bl = a[2] + a[6] + b[2] + b[6];
+			const int u = ((-29 * r - 99 * g + 128 * bl) / 4 + 128) >> 8, v = ((128 * r - 116 * g - 12 * bl) / 4 + 128) >> 8;
+			U[(size_t)y * cw + x] = (uint8_t)std::clamp(u + 128, 0, 255);
+			V[(size_t)y * cw + x] = (uint8_t)std::clamp(v + 128, 0, 255);
+		}
 	}
 }
 
@@ -200,14 +235,21 @@ void Thumbnails::on_rendered()
 			uint32_t linesize = 0;
 			if (!gs_stagesurface_map(item.stage, &data, &linesize))
 				continue;
-			const uint32_t row = width_ * 4;
-			Frame f(MSG_THUMBNAIL, 16 + (size_t)row * height_);
-			f.u32(kv.first).u16((uint16_t)width_).u16((uint16_t)height_).u8(0).u8(0).u8(0).u8(0).u32(row);
-			for (uint32_t y = 0; y < height_; y++)
-				f.bytes(data + (size_t)y * linesize, row);
+			const uint32_t row = format_ == I420 ? width_ : width_ * 4;
+			pack(data, linesize);
 			gs_stagesurface_unmap(item.stage);
-			if (writer_.send(f.finish(), Writer::BULK))
+			if (only_changes_ && item.last == pixels_) {
+				unchanged_++;
+				continue;
+			}
+			Frame f(MSG_THUMBNAIL, 16 + pixels_.size());
+			f.u32(kv.first).u16((uint16_t)width_).u16((uint16_t)height_).u8((uint8_t)format_).u8(0).u8(0).u8(0).u32(row);
+			f.bytes(pixels_.data(), pixels_.size());
+			if (writer_.send(f.finish(), Writer::BULK)) {
 				sent_++;
+				if (only_changes_)
+					item.last = pixels_;
+			}
 		}
 	}
 

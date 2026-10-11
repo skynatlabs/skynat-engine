@@ -562,6 +562,8 @@ std::string Engine::cmd_configure(obs_data_t *cmd)
 	const bool thumbs_on = thumbs_->enabled();
 	const uint32_t thumb_w = thumbs_->width(), thumb_h = thumbs_->height();
 	const double thumb_fps = thumbs_->fps();
+	const Thumbnails::Format thumb_format = thumbs_->format();
+	const bool thumb_changes = thumbs_->only_changes();
 	if (thumbs_on)
 		thumbs_->disable();
 	std::string error;
@@ -580,7 +582,7 @@ std::string Engine::cmd_configure(obs_data_t *cmd)
 		}
 	}
 	if (thumbs_on)
-		thumbs_->enable(thumb_w, thumb_h, thumb_fps);
+		thumbs_->enable(thumb_w, thumb_h, thumb_fps, thumb_format, thumb_changes);
 	return JsonObj()
 		.integer("width", w)
 		.integer("height", h)
@@ -1464,8 +1466,19 @@ std::string Engine::cmd_thumbnails(obs_data_t *cmd)
 	const uint32_t w = (uint32_t)std::clamp<int64_t>(get_int(cmd, "width", 256), 16, 1920) & ~1u;
 	const uint32_t h = (uint32_t)std::clamp<int64_t>(get_int(cmd, "height", 144), 16, 1080) & ~1u;
 	const double fps = std::clamp(get_double(cmd, "fps", 2.0), 0.2, 30.0);
-	thumbs_->enable(w, h, fps);
-	return JsonObj().boolean("on", true).integer("width", w).integer("height", h).number("fps", fps).dump();
+	const std::string format = get_str(cmd, "format", "rgba");
+	if (format != "rgba" && format != "i420")
+		throw CommandError("unknown thumbnail format \"" + format + "\" (rgba or i420)");
+	const bool only_changes = get_bool(cmd, "only_changes", false);
+	thumbs_->enable(w, h, fps, format == "i420" ? Thumbnails::I420 : Thumbnails::RGBA, only_changes);
+	return JsonObj()
+		.boolean("on", true)
+		.integer("width", w)
+		.integer("height", h)
+		.number("fps", fps)
+		.str("format", format)
+		.boolean("only_changes", only_changes)
+		.dump();
 }
 
 std::string Engine::stats_json()
@@ -1546,6 +1559,7 @@ std::string Engine::stats_json()
 		.integer("pcm_unrouted", (int64_t)pcm_unknown_.load())
 		.integer("overlay_updates", (int64_t)overlay_updates_.load())
 		.integer("thumbnails_sent", thumbs_ ? (int64_t)thumbs_->sent() : 0)
+		.integer("thumbnails_unchanged", thumbs_ ? (int64_t)thumbs_->unchanged() : 0)
 		.raw("projectors", projectors_ ? projectors_->list_json() : std::string("[]"))
 		.number("cpu_percent", cpu_percent)
 		.integer("threads", platform::thread_count())

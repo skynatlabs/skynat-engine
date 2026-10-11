@@ -72,7 +72,9 @@ export interface AudioConfig { sampleRate: number; channels: number; kbps: numbe
 export interface AudioPacket { ptsUs: number; data: Buffer }
 export interface FeedConfig extends VideoConfig { feed: FeedId }
 export interface FeedPacket extends VideoPacket { feed: FeedId }
-export interface Thumbnail { id: number; width: number; height: number; format: 'rgba'; stride: number; data: Buffer }
+/** RGBA: `height` rows of `stride` bytes. I420: the Y plane (`stride` = width) then U and V,
+ *  each (width/2)×(height/2) — full-range BT.709. */
+export interface Thumbnail { id: number; width: number; height: number; format: 'rgba' | 'i420'; stride: number; data: Buffer }
 
 export interface Capabilities {
   engine: string;
@@ -238,7 +240,7 @@ export function parseFeedPacket(p: Buffer): FeedPacket {
   return { feed: p[0] as FeedId, ...parseVideoPacket(p.subarray(1)) };
 }
 export function parseThumbnail(p: Buffer): Thumbnail {
-  return { id: p.readUInt32LE(0), width: p.readUInt16LE(4), height: p.readUInt16LE(6), format: 'rgba',
+  return { id: p.readUInt32LE(0), width: p.readUInt16LE(4), height: p.readUInt16LE(6), format: p[8] === 1 ? 'i420' : 'rgba',
     stride: p.readUInt32LE(12), data: p.subarray(16) };
 }
 
@@ -592,7 +594,9 @@ export class EngineClient {
   previewFeed(a: { on: boolean; width?: number; height?: number; fps?: number; preview_fps?: number; kbps?: number; program?: boolean; preview?: boolean }) {
     return this.command('preview_feed', a, 15000);
   }
-  thumbnails(a: { on: boolean; width?: number; height?: number; fps?: number }) { return this.command('thumbnails', a); }
+  /** `format` i420: 1.5 bytes a pixel instead of 4; `only_changes`: an input's thumbnail is sent
+   *  only when its picture changed since the last one sent (a still picture costs nothing). */
+  thumbnails(a: { on: boolean; width?: number; height?: number; fps?: number; format?: 'rgba' | 'i420'; only_changes?: boolean }) { return this.command('thumbnails', a); }
   stats(intervalMs?: number) { return this.command('stats', intervalMs === undefined ? {} : { interval_ms: intervalMs }); }
 
   // ---- orphans ---------------------------------------------------------------

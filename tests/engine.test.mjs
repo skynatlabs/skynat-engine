@@ -585,6 +585,24 @@ async function main() {
   let lutMissing = '';
   try { await client.lut(2, join(OUT_DIR, 'no-such.cube')); } catch (e) { lutMissing = e.message; }
   check('a missing LUT file is an error', /not found/.test(lutMissing), lutMissing);
+  // I420 thumbnails (1.5 bytes a pixel), and only when the picture changed: the blue colour is
+  // sent once and then counted as unchanged; the playing clip keeps coming.
+  const i420 = new Map();
+  const onI420 = (t) => { if (t.format === 'i420') { const l = i420.get(t.id) || []; l.push(t); i420.set(t.id, l); } };
+  client.on('thumbnail', onI420);
+  const thBefore = await client.stats();
+  const i420On = await client.thumbnails({ on: true, width: 256, height: 144, fps: 10, format: 'i420', only_changes: true });
+  await sleep(1500);
+  const thAfter = await client.stats();
+  client.off('thumbnail', onI420);
+  const blueI = i420.get(2) || [], clipI = i420.get(1) || [];
+  const yuv = (t, x, y) => { const w = t.width, h = t.height, d = t.data; const Y = d[y * w + x], U = d[w * h + (y >> 1) * (w >> 1) + (x >> 1)], V = d[w * h + (w >> 1) * (h >> 1) + (y >> 1) * (w >> 1) + (x >> 1)];
+    const r = Y + 1.5748 * (V - 128), g = Y - 0.1873 * (U - 128) - 0.4681 * (V - 128), b = Y + 1.8556 * (U - 128); return [r, g, b].map((v) => Math.round(Math.max(0, Math.min(255, v)))); };
+  const bp = blueI[0] ? yuv(blueI[0], 128, 72) : [];
+  check('I420 thumbnails: 1.5 bytes a pixel, the blue colour still blue', i420On.format === 'i420' && blueI.length >= 1 && blueI[0].data.length === 256 * 144 * 3 / 2 && bp[2] > 200 && bp[0] < 45 && bp[1] < 45,
+    `${blueI.length} sent, ${blueI[0] ? blueI[0].data.length : 0} bytes, rgb ${bp.join(',')}`);
+  check('only changes: the still colour is sent once, the playing clip keeps coming', blueI.length === 1 && clipI.length >= 8 && thAfter.thumbnails_unchanged - thBefore.thumbnails_unchanged >= 8,
+    `colour ${blueI.length}, clip ${clipI.length}, unchanged ${thAfter.thumbnails_unchanged - thBefore.thumbnails_unchanged}`);
   await client.thumbnails({ on: false });
   const progLut = await client.lut('program', lutFile, 1);
   await client.lut('program', '');

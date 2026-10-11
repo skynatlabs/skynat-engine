@@ -151,10 +151,11 @@ up, feed packets are dropped first and the feed resumes at its next keyframe.
 0   u32  input source id
 4   u16  width (default 256)
 6   u16  height (default 144)
-8   u8   format: 0 = RGBA
+8   u8   format: 0 = RGBA, 1 = I420
 9   u8×3 reserved
-12  u32  stride (width × 4)
-16  …    pixels, height rows of `stride` bytes
+12  u32  stride (RGBA: width × 4; I420: width)
+16  …    RGBA: height rows of `stride` bytes; I420: the Y plane (width × height), then U and V
+         ((width/2) × (height/2) each) — full-range BT.709, each chroma sample from its 2×2 pixels
 ```
 
 Each input as it looks fitted to the canvas (letterboxed), drawn on the GPU at a few frames per
@@ -192,7 +193,7 @@ own unsigned 32-bit numbers.
 | `stop_output` | — | `{was_running, video_packets, audio_packets}` after the encoders drained |
 | `set_bitrate` | `kbps` | `{kbps, encoder}` — applies live, no restart |
 | `preview_feed` | `on`, `width` (854), `height` (480), `fps` (15), `preview_fps` (= `fps`; Preview's own rate — e.g. half of Program's), `kbps` (1000), `program` (true), `preview` (true), `encoder`, `gpu_scale` (false) | `{on, width, height, fps, preview_fps, kbps, program, preview}` — sending it again with other size/rate/bitrate restarts the running feeds |
-| `thumbnails` | `on`, `width` (256), `height` (144), `fps` (2) | `{on, width, height, fps}` |
+| `thumbnails` | `on`, `width` (256), `height` (144), `fps` (2), `format` (`rgba` or `i420`, default `rgba`), `only_changes` (false: when true an input's thumbnail is sent only if its picture changed since the last one sent; the first after `on` always goes) | `{on, width, height, fps, format, only_changes}` |
 | `projector` | `id` (the app's number for it), `on` (true), `content`: `program` / `preview`, `fit`: `contain` / `cover` / `stretch`, `display_id` (macOS: the CGDirectDisplayID — Electron's display id), `display {x, y, width, height}` (macOS: points, top-left origin, as Electron's display bounds; Windows: physical pixels, as `screen.dipToScreenRect`), `windowed` (false; true: a plain window of exactly `display`, for checks) | `{id, on, content, fit, width, height, scale, frames, display {x, y, width, height}}` — `on: false` → `{id, on: false, was_open}` |
 | `stats` | `interval_ms` (optional: 0 stops, > 0 sends `stats` events at that interval) | stats (see `stats` event) |
 | `shutdown` | — | the result, then a `shutdown` event, then the process exits with code 0 |
@@ -233,7 +234,7 @@ top of Program.
 |---|---|
 | `ready` | sent once after start-up, before any command is read: `engine`, `version`, `protocol`, `libobs`, `renderer`, `pid`, `video {width, height, fps_num, fps_den, format, colorspace, range}`, `audio {sample_rate, channels}`, `encoders {h264_hardware: [ids], aac: [ids], x264}`, `sources` |
 | `result` | `req`, `cmd`, `ok`, `data` or `error` |
-| `stats` | `render_ms` (average time libobs spent rendering a frame), `fps`, `frames_rendered`, `frames_lagged`, `frames_output`, `frames_skipped` (encoder could not keep up), `output {active, encoder, kbps, frames, frames_dropped, video_packets, audio_packets, keyframes}`, `feeds {program, preview}`, `pcm [{id, frames, offset_ms, inserted, dropped, resyncs}]`, `pcm_unrouted`, `overlay_updates`, `thumbnails_sent`, `cpu_percent` (of one core, since the previous stats), `threads`, `memory_mb`, `pipe {queued_bytes, bytes_written, bulk_dropped, media_dropped}`, `projectors [{id, content, fit, width, height, frames, …}]`, `uptime_s`, `sources`, `scaled {bicubic, area}` (cameras and clips scaled to the canvas — with libobs's bicubic whenever scaled, below half libobs's own low-resolution filter — checked twice a second from their own size) |
+| `stats` | `render_ms` (average time libobs spent rendering a frame), `fps`, `frames_rendered`, `frames_lagged`, `frames_output`, `frames_skipped` (encoder could not keep up), `output {active, encoder, kbps, frames, frames_dropped, video_packets, audio_packets, keyframes}`, `feeds {program, preview}`, `pcm [{id, frames, offset_ms, inserted, dropped, resyncs}]`, `pcm_unrouted`, `overlay_updates`, `thumbnails_sent`, `thumbnails_unchanged` (not sent: the same as the last), `cpu_percent` (of one core, since the previous stats), `threads`, `memory_mb`, `pipe {queued_bytes, bytes_written, bulk_dropped, media_dropped}`, `projectors [{id, content, fit, width, height, frames, …}]`, `uptime_s`, `sources`, `scaled {bicubic, area}` (cameras and clips scaled to the canvas — with libobs's bicubic whenever scaled, below half libobs's own low-resolution filter — checked twice a second from their own size) |
 | `output` | `name` (`program`, `feed-program`, `feed-preview`), `state` (`started` / `stopped`), `code`, `error` |
 | `media` | `id`, `state: "ended"` |
 | `projector` | `id`, `state: "closed"`, `reason`: `escape` / `double-click` / `closed` / `display-gone` — the operator closed it at the projector, or its display went away (the engine has closed it already) |
