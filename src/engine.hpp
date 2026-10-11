@@ -6,6 +6,7 @@
 
 #include "io.hpp"
 #include "output.hpp"
+#include "projectors.hpp"
 #include "thumbnails.hpp"
 
 #include <obs.h>
@@ -86,6 +87,7 @@ private:
 	std::string cmd_set_bitrate(obs_data_t *cmd);
 	std::string cmd_preview_feed(obs_data_t *cmd);
 	std::string cmd_thumbnails(obs_data_t *cmd);
+	std::string cmd_projector(obs_data_t *cmd);
 	std::string cmd_stats(obs_data_t *cmd);
 
 	// helpers
@@ -134,6 +136,7 @@ private:
 	Feed feed_preview_;
 	std::string feed_params_;
 	std::unique_ptr<Thumbnails> thumbs_;
+	std::unique_ptr<Projectors> projectors_;
 
 	std::vector<std::string> hw_encoders_;
 	std::vector<std::string> aac_ids_;

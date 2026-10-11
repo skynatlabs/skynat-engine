@@ -75,5 +75,40 @@ void module_paths(const std::string &plugin_dir, const std::string &data_dir, co
 // Source ids used by the engine for a camera on this platform.
 const char *camera_source_id(bool fast);
 
+// ---- projector windows (see projectors.cpp) -----------------------------------
+// A projector is a borderless window of the engine's own over a whole display,
+// that libobs draws Program or Preview into directly (obs_display) — at the
+// display's own pixels, nothing compressed between the picture and the screen.
+struct ProjectorTarget {
+	// The display: its id as the app knows it (macOS: the CGDirectDisplayID
+	// Electron reports; ignored elsewhere), and/or a rectangle on it — macOS:
+	// points, top-left origin (Electron's display bounds); Windows: physical
+	// pixels (Electron's screen.dipToScreenRect). The display containing the
+	// rectangle's centre is used; no rectangle and no known id: the main one.
+	int64_t display_id = -1;
+	bool has_rect = false;
+	int x = 0, y = 0, width = 0, height = 0;
+	// A plain window of exactly that rectangle instead of the whole display
+	// (the checks use it: a small window, not a screen-filling one).
+	bool windowed = false;
+};
+struct ProjectorWindowInfo {
+	void *native = nullptr; // macOS: the NSView; Windows: the HWND
+	uint32_t cx = 0, cy = 0; // drawable size in pixels
+	double scale = 1.0;      // pixels per point (macOS backing scale; Windows 1)
+	int screen_x = 0, screen_y = 0, screen_width = 0, screen_height = 0; // the display, as above
+};
+struct ProjectorWindow; // opaque
+// Opens the window (main thread). `on_close` (main thread) hears the operator
+// closing it — Escape or a double-click on it — or its display going away;
+// `on_resize` (main thread) its new size in pixels.
+ProjectorWindow *open_projector_window(const ProjectorTarget &target, const std::string &title, ProjectorWindowInfo *info,
+				       std::function<void(const std::string &reason)> on_close,
+				       std::function<void(uint32_t cx, uint32_t cy)> on_resize, std::string *error);
+void close_projector_window(ProjectorWindow *window); // main thread; destroys it
+// Called once before the main loop (Windows: per-monitor DPI awareness, so a
+// projector's pixels are the display's own, never scaled by Windows).
+void init_ui();
+
 } // namespace platform
 } // namespace skynat

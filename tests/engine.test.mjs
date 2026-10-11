@@ -580,6 +580,47 @@ async function main() {
   const errors = events.filter((e) => e.ev.event === 'error');
   check('no error events', errors.length === 0, errors.map((e) => e.ev.message).join(' | '));
 
+  // ---- projectors: Program drawn by libobs straight into a window of the engine's own ----
+  // (windowed for the check — a small window, not one filling the screen; a
+  // full-screen one is checked too with SKYNAT_ENGINE_TEST_FULLSCREEN=1).
+  await client.setProgram(2, 'cut');   // blue
+  await sleep(300);
+  const rect = { x: 40, y: 80, width: 320, height: 180 };
+  let proj = null, projErr = '';
+  try { proj = await client.command('projector', { id: 7, on: true, content: 'program', windowed: true, display: rect }); } catch (e) { projErr = e.message; }
+  check('a projector window opens and libobs gets its size in pixels', !!proj && proj.on === true && proj.width >= rect.width && proj.height >= rect.height && proj.content === 'program',
+    projErr || JSON.stringify(proj));
+  await sleep(900);
+  const pInfo = ((await client.stats()).projectors || []).find((p) => p.id === 7);
+  rt('libobs draws Program into the projector every frame', !!pInfo && pInfo.frames >= 15, JSON.stringify(pInfo));
+  if (process.platform === 'darwin' && !CI && proj) {
+    // What it shows, off the screen itself (only when this process may record the screen).
+    const shot = join(OUT_DIR, 'projector.png');
+    const cap = spawnSync('screencapture', ['-x', `-R${rect.x},${rect.y},${rect.width},${rect.height}`, shot]);
+    if (cap.status === 0 && existsSync(shot)) {
+      const raw = spawnSync(FFMPEG, ['-v', 'error', '-i', shot, '-vf', 'scale=32:18', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1 << 20 });
+      const px = raw.stdout && raw.stdout.length >= 32 * 18 * 3 ? [...raw.stdout.subarray((9 * 32 + 16) * 3, (9 * 32 + 16) * 3 + 3)] : null;
+      if (px && px.some((v) => v > 0)) check('the projector shows Program on the screen (blue)', px[2] > 180 && px[0] < 60 && px[1] < 60, px.join(','));
+      else note('the projector on the screen', 'not checked: this process may not record the screen (black capture)');
+    }
+  }
+  let p2 = null;
+  try { p2 = await client.command('projector', { id: 7, on: true, content: 'preview', fit: 'stretch', windowed: true, display: rect }); } catch (e) { p2 = { error: e.message }; }
+  check('the same projector switches to Preview and another fit in place', !!p2 && p2.content === 'preview' && p2.fit === 'stretch' && p2.width === proj?.width, JSON.stringify(p2));
+  let badErr = '';
+  try { await client.command('projector', { id: 9, content: 'nope' }); } catch (e) { badErr = e.message; }
+  check('a projector with an unknown content is refused', /content must be/.test(badErr), badErr);
+  const closed = await client.command('projector', { id: 7, on: false });
+  const afterClose = ((await client.stats()).projectors || []).some((p) => p.id === 7);
+  check('a projector closes on command', closed.was_open === true && !afterClose, JSON.stringify(closed));
+  if (process.env.SKYNAT_ENGINE_TEST_FULLSCREEN === '1') {
+    const full = await client.command('projector', { id: 8, on: true, content: 'program' });
+    check('a full-screen projector covers its display at the display\'s own pixels', full.width >= full.display.width && full.height >= full.display.height,
+      `${full.width}x${full.height} px for a ${full.display.width}x${full.display.height} display (×${full.scale})`);
+    await sleep(400);
+    await client.command('projector', { id: 8, on: false });
+  }
+
   // Remove a source that is on Program -> black, no crash.
   await client.setProgram(2, 'cut');
   const before = (await client.stats()).sources;

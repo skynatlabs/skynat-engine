@@ -189,8 +189,23 @@ own unsigned 32-bit numbers.
 | `set_bitrate` | `kbps` | `{kbps, encoder}` — applies live, no restart |
 | `preview_feed` | `on`, `width` (854), `height` (480), `fps` (15), `kbps` (1000), `program` (true), `preview` (true), `encoder`, `gpu_scale` (false) | `{on, width, height, fps, kbps, program, preview}` — sending it again with other size/rate/bitrate restarts the running feeds |
 | `thumbnails` | `on`, `width` (256), `height` (144), `fps` (2) | `{on, width, height, fps}` |
+| `projector` | `id` (the app's number for it), `on` (true), `content`: `program` / `preview`, `fit`: `contain` / `cover` / `stretch`, `display_id` (macOS: the CGDirectDisplayID — Electron's display id), `display {x, y, width, height}` (macOS: points, top-left origin, as Electron's display bounds; Windows: physical pixels, as `screen.dipToScreenRect`), `windowed` (false; true: a plain window of exactly `display`, for checks) | `{id, on, content, fit, width, height, scale, frames, display {x, y, width, height}}` — `on: false` → `{id, on: false, was_open}` |
 | `stats` | `interval_ms` (optional: 0 stops, > 0 sends `stats` events at that interval) | stats (see `stats` event) |
 | `shutdown` | — | the result, then a `shutdown` event, then the process exits with code 0 |
+
+### Projectors
+
+A projector is a borderless window of the engine's own over a whole display (above the menu
+bar and the Dock / the taskbar, on every Space, not in the window cycle), into which libobs
+draws Program (the canvas it just rendered, overlays and all) or Preview (the preview input
+itself, drawn at the display's size) every frame — at the display's own pixels (Retina:
+`wantsBestResolutionOpenGLSurface`; Windows: the engine is per-monitor DPI aware), with nothing
+encoded or decoded between the picture and the screen. Program is drawn 1:1 when the display
+is the canvas's size and with the bicubic filter when it is scaled. It never takes the focus
+when it opens; clicked, Escape or a double-click closes it (the way out when it covers the
+app's own screen) — then, and when its display is unplugged, a `projector` event says so.
+Sending `projector` again for an open id changes `content` and `fit` in place (another display
+reopens it).
 
 ### Source types
 
@@ -213,9 +228,10 @@ top of Program.
 |---|---|
 | `ready` | sent once after start-up, before any command is read: `engine`, `version`, `protocol`, `libobs`, `renderer`, `pid`, `video {width, height, fps_num, fps_den, format, colorspace, range}`, `audio {sample_rate, channels}`, `encoders {h264_hardware: [ids], aac: [ids], x264}`, `sources` |
 | `result` | `req`, `cmd`, `ok`, `data` or `error` |
-| `stats` | `render_ms` (average time libobs spent rendering a frame), `fps`, `frames_rendered`, `frames_lagged`, `frames_output`, `frames_skipped` (encoder could not keep up), `output {active, encoder, kbps, frames, frames_dropped, video_packets, audio_packets, keyframes}`, `feeds {program, preview}`, `pcm [{id, frames, offset_ms, inserted, dropped, resyncs}]`, `pcm_unrouted`, `overlay_updates`, `thumbnails_sent`, `cpu_percent` (of one core, since the previous stats), `threads`, `memory_mb`, `pipe {queued_bytes, bytes_written, bulk_dropped, media_dropped}`, `uptime_s`, `sources` |
+| `stats` | `render_ms` (average time libobs spent rendering a frame), `fps`, `frames_rendered`, `frames_lagged`, `frames_output`, `frames_skipped` (encoder could not keep up), `output {active, encoder, kbps, frames, frames_dropped, video_packets, audio_packets, keyframes}`, `feeds {program, preview}`, `pcm [{id, frames, offset_ms, inserted, dropped, resyncs}]`, `pcm_unrouted`, `overlay_updates`, `thumbnails_sent`, `cpu_percent` (of one core, since the previous stats), `threads`, `memory_mb`, `pipe {queued_bytes, bytes_written, bulk_dropped, media_dropped}`, `projectors [{id, content, fit, width, height, frames, …}]`, `uptime_s`, `sources` |
 | `output` | `name` (`program`, `feed-program`, `feed-preview`), `state` (`started` / `stopped`), `code`, `error` |
 | `media` | `id`, `state: "ended"` |
+| `projector` | `id`, `state: "closed"`, `reason`: `escape` / `double-click` / `closed` / `display-gone` — the operator closed it at the projector, or its display went away (the engine has closed it already) |
 | `log` | `level` (`error` / `warning`), `message` — at most 20 per second; the full log is on stderr |
 | `error` | `message`, `fatal` (true only when start-up failed; the process then exits with code 3) |
 | `shutdown` | `reason` — the last event before the process exits |

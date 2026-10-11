@@ -11,10 +11,13 @@
 #include <psapi.h>
 #include <tlhelp32.h>
 
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -85,10 +88,20 @@ long read_some(intptr_t handle, void *data, size_t size)
 
 // ---- main thread ------------------------------------------------------------
 
+// Commands run on the main thread in order; the main thread also pumps the
+// window messages of the projector windows (a window whose thread does not
+// pump them is "not responding" to Windows within seconds).
 static std::mutex g_mutex;
-static std::condition_variable g_cv;
 static std::deque<std::function<void()>> g_queue;
 static bool g_quit = false;
+static HANDLE g_wake = nullptr; // auto-reset: something was posted, or quit
+
+static HANDLE wake_event()
+{
+	static std::once_flag once;
+	std::call_once(once, [] { g_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr); });
+	return g_wake;
+}
 
 void post_main(std::function<void()> fn)
 {
@@ -96,22 +109,32 @@ void post_main(std::function<void()> fn)
 		std::lock_guard<std::mutex> lock(g_mutex);
 		g_queue.push_back(std::move(fn));
 	}
-	g_cv.notify_one();
+	SetEvent(wake_event());
 }
 
 void run_main_loop()
 {
+	HANDLE wake = wake_event();
 	for (;;) {
-		std::function<void()> fn;
-		{
-			std::unique_lock<std::mutex> lock(g_mutex);
-			g_cv.wait(lock, [] { return g_quit || !g_queue.empty(); });
-			if (g_quit)
-				return;
-			fn = std::move(g_queue.front());
-			g_queue.pop_front();
+		MsgWaitForMultipleObjects(1, &wake, FALSE, INFINITE, QS_ALLINPUT);
+		MSG msg;
+		while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+			TranslateMessage(&msg);
+			DispatchMessageW(&msg);
 		}
-		fn();
+		for (;;) {
+			std::function<void()> fn;
+			{
+				std::lock_guard<std::mutex> lock(g_mutex);
+				if (g_quit)
+					return;
+				if (g_queue.empty())
+					break;
+				fn = std::move(g_queue.front());
+				g_queue.pop_front();
+			}
+			fn();
+		}
 	}
 }
 
@@ -124,9 +147,22 @@ void quit_main_loop()
 		std::lock_guard<std::mutex> lock(g_mutex);
 		g_quit = true;
 	}
-	g_cv.notify_one();
+	SetEvent(wake_event());
 	if (g_terminated)
 		SetEvent(g_terminated); // lets a waiting console close handler return
+}
+
+void init_ui()
+{
+	// Per-monitor DPI aware: a projector's window is the display's own
+	// pixels — never drawn smaller and stretched by Windows on a 125 % or
+	// 150 % display (the soft picture that scaling gives).
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	using SetCtx = BOOL(WINAPI *)(HANDLE);
+	auto set_ctx = user32 ? (SetCtx)GetProcAddress(user32, "SetProcessDpiAwarenessContext") : nullptr;
+	if (!set_ctx || !set_ctx((HANDLE)-4 /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */))
+		SetProcessDPIAware();
+	wake_event();
 }
 
 static BOOL WINAPI console_handler(DWORD type)
@@ -307,6 +343,172 @@ void module_paths(const std::string &plugin_dir, const std::string &data_dir, co
 const char *camera_source_id(bool)
 {
 	return "dshow_input";
+}
+
+// ---- projector windows ----------------------------------------------------------
+
+struct ProjectorWindow {
+	HWND hwnd = nullptr;
+	bool windowed = false;
+	RECT monitor = {};
+	std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>>(true);
+	std::shared_ptr<std::function<void(const std::string &)>> on_close;
+	std::shared_ptr<std::function<void(uint32_t, uint32_t)>> on_resize;
+};
+
+static const wchar_t *kProjectorClass = L"SkynatEngineProjector";
+
+static void post_close(ProjectorWindow *pw, const char *reason)
+{
+	auto alive = pw->alive;
+	auto cb = pw->on_close;
+	std::string why = reason;
+	post_main([alive, cb, why]() {
+		if (alive->load() && cb && *cb)
+			(*cb)(why);
+	});
+}
+
+static LRESULT CALLBACK projector_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	auto *pw = reinterpret_cast<ProjectorWindow *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+	switch (msg) {
+	case WM_ERASEBKGND:
+		return 1; // libobs paints every pixel
+	case WM_KEYDOWN:
+		if (wp == VK_ESCAPE && pw) {
+			post_close(pw, "escape");
+			return 0;
+		}
+		break;
+	case WM_LBUTTONDBLCLK:
+		if (pw)
+			post_close(pw, "double-click");
+		return 0;
+	case WM_CLOSE:
+		if (pw)
+			post_close(pw, "closed");
+		return 0; // the engine closes it (and says so)
+	case WM_SIZE:
+		if (pw && pw->on_resize) {
+			const uint32_t cx = LOWORD(lp), cy = HIWORD(lp);
+			auto alive = pw->alive;
+			auto cb = pw->on_resize;
+			if (cx && cy)
+				post_main([alive, cb, cx, cy]() {
+					if (alive->load() && cb && *cb)
+						(*cb)(cx, cy);
+				});
+		}
+		break;
+	case WM_DISPLAYCHANGE:
+		// A display unplugged or its mode changed: a full-screen projector
+		// follows its display, and closes if it is gone (it must never land
+		// on top of the studio by itself).
+		if (pw && !pw->windowed) {
+			POINT c = {(pw->monitor.left + pw->monitor.right) / 2, (pw->monitor.top + pw->monitor.bottom) / 2};
+			HMONITOR mon = MonitorFromPoint(c, MONITOR_DEFAULTTONULL);
+			MONITORINFO mi = {sizeof(mi)};
+			if (!mon || !GetMonitorInfoW(mon, &mi)) {
+				post_close(pw, "display-gone");
+			} else {
+				pw->monitor = mi.rcMonitor;
+				SetWindowPos(hwnd, HWND_TOPMOST, mi.rcMonitor.left, mi.rcMonitor.top,
+					     mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+					     SWP_NOACTIVATE);
+			}
+		}
+		break;
+	default:
+		break;
+	}
+	return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+ProjectorWindow *open_projector_window(const ProjectorTarget &target, const std::string &title, ProjectorWindowInfo *info,
+				       std::function<void(const std::string &reason)> on_close,
+				       std::function<void(uint32_t cx, uint32_t cy)> on_resize, std::string *error)
+{
+	static bool registered = false;
+	HINSTANCE inst = GetModuleHandleW(nullptr);
+	if (!registered) {
+		WNDCLASSEXW wc = {sizeof(wc)};
+		wc.style = CS_DBLCLKS;
+		wc.lpfnWndProc = projector_proc;
+		wc.hInstance = inst;
+		wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+		wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+		wc.lpszClassName = kProjectorClass;
+		if (!RegisterClassExW(&wc)) {
+			*error = "could not register the projector window class";
+			return nullptr;
+		}
+		registered = true;
+	}
+
+	// The display: the one holding the rectangle's centre (physical pixels),
+	// or the main one.
+	POINT c = {0, 0};
+	if (target.has_rect)
+		c = {target.x + target.width / 2, target.y + target.height / 2};
+	HMONITOR mon = MonitorFromPoint(c, MONITOR_DEFAULTTOPRIMARY);
+	MONITORINFO mi = {sizeof(mi)};
+	if (!mon || !GetMonitorInfoW(mon, &mi)) {
+		*error = "no display to put the projector on";
+		return nullptr;
+	}
+	RECT r = mi.rcMonitor;
+	if (target.windowed && target.has_rect && target.width > 0 && target.height > 0)
+		r = {target.x, target.y, target.x + target.width, target.y + target.height};
+
+	auto *pw = new ProjectorWindow();
+	pw->windowed = target.windowed;
+	pw->monitor = mi.rcMonitor;
+	pw->on_close = std::make_shared<std::function<void(const std::string &)>>(std::move(on_close));
+	pw->on_resize = std::make_shared<std::function<void(uint32_t, uint32_t)>>(std::move(on_resize));
+
+	const int len = MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, nullptr, 0);
+	std::wstring wtitle(len > 0 ? (size_t)len : 1, L'\0');
+	if (len > 0)
+		MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, wtitle.data(), len);
+
+	// Borderless, over the taskbar, not in the taskbar or Alt-Tab, shown
+	// without taking the focus from the studio.
+	pw->hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kProjectorClass, wtitle.c_str(), WS_POPUP, r.left,
+				   r.top, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
+	if (!pw->hwnd) {
+		*error = "could not create the projector window";
+		delete pw;
+		return nullptr;
+	}
+	SetWindowLongPtrW(pw->hwnd, GWLP_USERDATA, (LONG_PTR)pw);
+	ShowWindow(pw->hwnd, SW_SHOWNOACTIVATE);
+	UpdateWindow(pw->hwnd);
+
+	RECT client;
+	GetClientRect(pw->hwnd, &client);
+	info->native = pw->hwnd;
+	info->cx = (uint32_t)(client.right - client.left);
+	info->cy = (uint32_t)(client.bottom - client.top);
+	info->scale = 1.0;
+	info->screen_x = mi.rcMonitor.left;
+	info->screen_y = mi.rcMonitor.top;
+	info->screen_width = mi.rcMonitor.right - mi.rcMonitor.left;
+	info->screen_height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+	return pw;
+}
+
+void close_projector_window(ProjectorWindow *pw)
+{
+	if (!pw)
+		return;
+	pw->alive->store(false);
+	if (pw->hwnd) {
+		SetWindowLongPtrW(pw->hwnd, GWLP_USERDATA, 0);
+		DestroyWindow(pw->hwnd);
+		pw->hwnd = nullptr;
+	}
+	delete pw;
 }
 
 } // namespace platform

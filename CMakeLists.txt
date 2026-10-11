@@ -28,6 +28,8 @@ add_executable(
   src/output.cpp
   src/output.hpp
   src/platform.hpp
+  src/projectors.cpp
+  src/projectors.hpp
   src/protocol.hpp
   src/sources.cpp
   src/sources.hpp
@@ -43,6 +45,7 @@ if(APPLE)
   target_link_libraries(
     skynat-engine
     PRIVATE
+      "-framework AppKit"
       "-framework Foundation"
       "-framework CoreFoundation"
       "-framework AVFoundation"
@@ -61,7 +64,7 @@ if(APPLE)
 elseif(WIN32)
   target_sources(skynat-engine PRIVATE src/platform-windows.cpp)
   target_compile_definitions(skynat-engine PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
-  target_link_libraries(skynat-engine PRIVATE psapi)
+  target_link_libraries(skynat-engine PRIVATE psapi user32 gdi32)
   # A console-subsystem program: Skynat Live spawns it with windowsHide, so
   # no console window ever appears.
 endif()

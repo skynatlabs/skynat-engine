@@ -222,6 +222,10 @@ int main(int argc, char **argv)
 		return 70;
 	}
 
+	// The windowing side (a projector's window): set up before anything else
+	// touches it.
+	platform::init_ui();
+
 	Writer writer(out_handle);
 	writer.start();
 	g_writer = &writer;

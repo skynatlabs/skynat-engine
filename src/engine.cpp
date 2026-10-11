@@ -251,6 +251,14 @@ bool Engine::startup(std::string *error)
 
 		preview_view_ = obs_view_create();
 		thumbs_ = std::make_unique<Thumbnails>(writer_);
+		projectors_ = std::make_unique<Projectors>(preview_view_, [this](uint32_t id, const std::string &reason) {
+			writer_.event(JsonObj()
+					      .str("event", "projector")
+					      .integer("id", id)
+					      .str("state", "closed")
+					      .str("reason", reason)
+					      .dump());
+		});
 	}
 
 	for (const auto &id : platform::hardware_h264_encoders())
@@ -431,6 +439,7 @@ void Engine::handle_command(const std::string &json)
 		{"set_bitrate", &Engine::cmd_set_bitrate, true},
 		{"preview_feed", &Engine::cmd_preview_feed, true},
 		{"thumbnails", &Engine::cmd_thumbnails, true},
+		{"projector", &Engine::cmd_projector, true},
 		{"stats", &Engine::cmd_stats, false},
 	};
 	try {
@@ -1045,8 +1054,18 @@ obs_encoder_t *Engine::create_video_encoder(const std::string &name, const std::
 			obs_data_set_bool(s, "limit_bitrate", true);
 			obs_data_set_int(s, "max_bitrate", kbps);
 			obs_data_set_double(s, "max_bitrate_window", 1.5);
-		} else {
+		} else if (id.rfind("obs_qsv11", 0) == 0) {
+			// Intel Quick Sync calls it "bframes" (default 3): with "bf" only,
+			// it reordered frames that the FLV path stamps in arrival order —
+			// broken, blocky pictures on Intel graphics. Quality-leaning
+			// target usage (TU2 of 1..7) for a clean picture at the bitrate.
+			obs_data_set_int(s, "bframes", 0);
 			obs_data_set_int(s, "bf", 0);
+			obs_data_set_string(s, "target_usage", "TU2");
+		} else {
+			// NVENC (preset p5, high quality, multipass by default) and AMD AMF.
+			obs_data_set_int(s, "bf", 0);
+			obs_data_set_int(s, "bframes", 0);
 		}
 		obs_encoder_t *enc = obs_video_encoder_create(id.c_str(), name.c_str(), s, nullptr);
 		obs_data_release(s);
@@ -1287,7 +1306,8 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 			obs_get_video_info(&ovi);
 			ovi.output_width = w;
 			ovi.output_height = h;
-			ovi.scale_type = OBS_SCALE_BILINEAR;
+			// Bicubic, as the Program feed and the canvas: a crisp monitor.
+			ovi.scale_type = OBS_SCALE_BICUBIC;
 			ovi.gpu_conversion = true;
 			preview_video_ = obs_view_add2(preview_view_, &ovi);
 			if (!preview_video_)
@@ -1392,6 +1412,7 @@ std::string Engine::stats_json()
 		.integer("pcm_unrouted", (int64_t)pcm_unknown_.load())
 		.integer("overlay_updates", (int64_t)overlay_updates_.load())
 		.integer("thumbnails_sent", thumbs_ ? (int64_t)thumbs_->sent() : 0)
+		.raw("projectors", projectors_ ? projectors_->list_json() : std::string("[]"))
 		.number("cpu_percent", cpu_percent)
 		.integer("threads", platform::thread_count())
 		.integer("memory_mb", (int64_t)(platform::resident_bytes() / (1024 * 1024)))
@@ -1399,6 +1420,43 @@ std::string Engine::stats_json()
 		.number("uptime_s", (now - startup_ns_) / 1e9)
 		.integer("sources", (int64_t)sources_.size());
 	return s.dump();
+}
+
+// projector {id, on, content, fit, display_id, display:{x,y,width,height}, windowed}
+std::string Engine::cmd_projector(obs_data_t *cmd)
+{
+	const uint32_t id = require_id(cmd);
+	if (!projectors_)
+		throw CommandError("projectors are not available");
+	if (!get_bool(cmd, "on", true)) {
+		const bool was = projectors_->close(id);
+		return JsonObj().integer("id", id).boolean("on", false).boolean("was_open", was).dump();
+	}
+	Projectors::Content content;
+	if (!Projectors::parse_content(get_str(cmd, "content", "program"), &content))
+		throw CommandError("content must be \"program\" or \"preview\"");
+	Projectors::Fit fit;
+	if (!Projectors::parse_fit(get_str(cmd, "fit", "contain"), &fit))
+		throw CommandError("fit must be \"contain\", \"cover\" or \"stretch\"");
+	platform::ProjectorTarget target;
+	target.display_id = get_int(cmd, "display_id", -1);
+	target.windowed = get_bool(cmd, "windowed", false);
+	obs_data_t *d = obs_data_get_obj(cmd, "display");
+	if (d) {
+		target.has_rect = true;
+		target.x = (int)obs_data_get_int(d, "x");
+		target.y = (int)obs_data_get_int(d, "y");
+		target.width = (int)obs_data_get_int(d, "width");
+		target.height = (int)obs_data_get_int(d, "height");
+		obs_data_release(d);
+	}
+	if (target.windowed && (!target.has_rect || target.width < 16 || target.height < 16))
+		throw CommandError("a windowed projector needs \"display\": {x, y, width, height}");
+	std::string error;
+	std::string json = projectors_->open(id, content, fit, target, &error);
+	if (json.empty())
+		throw CommandError(error.empty() ? "the projector could not open" : error);
+	return json;
 }
 
 std::string Engine::cmd_stats(obs_data_t *cmd)
@@ -1440,6 +1498,8 @@ void Engine::shutdown(const std::string &reason)
 
 	if (started_) {
 		obs_remove_tick_callback(stats_tick, this);
+		if (projectors_)
+			projectors_->close_all();
 		if (thumbs_) {
 			thumbs_->disable();
 			thumbs_->clear();
@@ -1462,6 +1522,7 @@ void Engine::shutdown(const std::string &reason)
 		if (overlay_scene_)
 			obs_scene_release(overlay_scene_);
 		overlay_scene_ = nullptr;
+		projectors_.reset();
 		if (preview_view_)
 			obs_view_destroy(preview_view_);
 		preview_view_ = nullptr;
