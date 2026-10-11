@@ -136,8 +136,10 @@ Same as types 3 and 4 with one extra byte in front:
 Feeds are small hardware H.264 streams (default 854×480, 15 fps, 1000 kbit/s, Main profile,
 keyframe every second) for the app's monitors — decode them with WebCodecs `VideoDecoder`.
 The Program feed is a scaled copy of the program picture (nothing is rendered twice): by default
-libobs scales it in its video thread; `gpu_scale: true` scales it on the GPU instead (bicubic,
-like the processor's scaler). Measured on an M2: while Program is also being encoded, about the
+libobs scales it in its video thread; `gpu_scale: true` scales it on the GPU instead (with the
+area filter when the feed is smaller than the canvas — every canvas pixel counted by how much of
+it a feed pixel covers, so thin lines and small text do not shimmer; bicubic above the canvas's
+size). The Preview feed's mix is made smaller the same way. Measured on an M2: while Program is also being encoded, about the
 same CPU and ~2.5 ms more graphics-thread time per frame; with nothing recorded or streamed, the
 GPU path spares the whole canvas's readback (engine 21.6 → 19.4 % of a core with two 1080p30
 clips and both feeds), so the app asks for it. The CPU path stays the default. The Preview feed renders the preview input into its own small mix. If the pipe backs
@@ -156,7 +158,8 @@ up, feed packets are dropped first and the feed resumes at its next keyframe.
 ```
 
 Each input as it looks fitted to the canvas (letterboxed), drawn on the GPU at a few frames per
-second and read back one frame later. Alpha is undefined — treat the picture as opaque. Dropped
+second — at up to four times the thumbnail's size, then made smaller with the area filter — and
+read back one frame later. Alpha is undefined — treat the picture as opaque. Dropped
 first if the pipe backs up.
 
 ## Commands (type 1)
@@ -184,7 +187,7 @@ own unsigned 32-bit numbers.
 | `set_preview` | `id` or `null` | `{id}` — what the Preview feed shows (studio mode) |
 | `overlay_visible` | `id`, `visible` | `{id, visible}` |
 | `media` | `id`, `action`: `play` / `pause` / `restart` / `stop` | `{id, action}` |
-| `start_output` | `video_kbps` (default 6000), `audio_kbps` (160), `keyint_sec` (2), `encoder`: `auto` (hardware, else x264) / `hardware` / `x264` / an encoder id | `{encoder, hardware, audio_encoder, video_kbps, audio_kbps, keyint_sec}` |
+| `start_output` | `video_kbps` (default 6000), `audio_kbps` (160), `keyint_sec` (2), `encoder`: `auto` (hardware, else x264) / `hardware` / `x264` / an encoder id, `quality`: `balanced` (default) / `best` | `{encoder, preset, quality, hardware, audio_encoder, video_kbps, audio_kbps, keyint_sec}` — `preset` in words: NVENC p5 high quality with a quarter-resolution first pass (`best`: p6, full-resolution), Quick Sync TU2 (`best`: TU1), AMF quality, VideoToolbox constant bitrate, x264 veryfast tuned for film (`best`: faster); no B-frames. Monitor feeds use x264 with zerolatency |
 | `stop_output` | — | `{was_running, video_packets, audio_packets}` after the encoders drained |
 | `set_bitrate` | `kbps` | `{kbps, encoder}` — applies live, no restart |
 | `preview_feed` | `on`, `width` (854), `height` (480), `fps` (15), `kbps` (1000), `program` (true), `preview` (true), `encoder`, `gpu_scale` (false) | `{on, width, height, fps, kbps, program, preview}` — sending it again with other size/rate/bitrate restarts the running feeds |
@@ -201,7 +204,8 @@ draws Program (the canvas it just rendered, overlays and all) or Preview (the pr
 itself, drawn at the display's size) every frame — at the display's own pixels (Retina:
 `wantsBestResolutionOpenGLSurface`; Windows: the engine is per-monitor DPI aware), with nothing
 encoded or decoded between the picture and the screen. Program is drawn 1:1 when the display
-is the canvas's size and with the bicubic filter when it is scaled. It never takes the focus
+is the canvas's size, with the bicubic filter when it is enlarged and the area filter when it
+is made smaller. It never takes the focus
 when it opens; clicked, Escape or a double-click closes it (the way out when it covers the
 app's own screen) — then, and when its display is unplugged, a `projector` event says so.
 Sending `projector` again for an open id changes `content` and `fit` in place (another display

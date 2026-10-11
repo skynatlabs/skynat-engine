@@ -344,6 +344,7 @@ async function main() {
     check('output started on the software x264 fallback (CI runner without a hardware encoder)', out.encoder === 'obs_x264',
       `${out.encoder} + ${out.audio_encoder}`);
   }
+  check('the output says how it encodes (balanced unless asked)', out.quality === 'balanced' && typeof out.preset === 'string' && out.preset.length > 3, `${out.encoder}: ${out.preset}`);
   const tOut = Date.now();
   const at = (s) => sleep(Math.max(0, tOut + s * 1000 - Date.now()));
 
@@ -668,13 +669,17 @@ async function main() {
   client.on('videoConfig', onCfg); client.on('videoPacket', onPkt);
   await client.addSource({ id: 7, type: 'color', color: '#00ff00' });
   await client.setProgram(7);
-  const x264 = await client.startOutput({ video_kbps: 3000, encoder: 'x264' });
+  let badQuality = '';
+  try { await client.startOutput({ video_kbps: 3000, quality: 'ultra' }); } catch (e) { badQuality = e.message; }
+  check('an unknown picture quality is refused', /quality must be/.test(badQuality), badQuality);
+  const x264 = await client.startOutput({ video_kbps: 3000, encoder: 'x264', quality: 'best' });
   // 1.5 s (about 90 packets in real time); a runner that cannot keep real time
   // gets up to 10 s to show that the encoder runs.
   const encodeUntil = Date.now() + (excusedRealtime ? 10000 : 1500);
   while (Date.now() < encodeUntil && !(excusedRealtime && n720 > 30)) await sleep(20);
   await client.stopOutput();
   check('software x264 only when asked for', x264.encoder === 'obs_x264' && x264.hardware === false && n720 > 30, `${x264.encoder}, ${n720} packets`);
+  check('…at "best": the slower preset, tuned for film', x264.quality === 'best' && x264.preset === 'faster, film', x264.preset);
   client.off('videoConfig', onCfg); client.off('videoPacket', onPkt);
   const st720 = await client.stats();
   check(`configure: ${alt.w}x${alt.h} at 60 fps`, cfg.width === alt.w && cfg.fps_num === 60 && cfg720 && cfg720.width === alt.w && cfg720.height === alt.h && cfg720.fpsNum === 60 && st720.fps === 60,

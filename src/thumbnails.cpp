@@ -8,8 +8,10 @@
 #include "protocol.hpp"
 
 #include <graphics/graphics.h>
+#include <graphics/vec2.h>
 #include <graphics/vec4.h>
 
+#include <algorithm>
 #include <vector>
 
 namespace skynat {
@@ -64,13 +66,15 @@ void Thumbnails::add(uint32_t id, obs_source_t *scene)
 
 void Thumbnails::free_item_gpu(Item &item)
 {
-	if (item.texrender || item.stage) {
+	if (item.texrender || item.big || item.stage) {
 		obs_enter_graphics();
 		gs_texrender_destroy(item.texrender);
+		gs_texrender_destroy(item.big);
 		gs_stagesurface_destroy(item.stage);
 		obs_leave_graphics();
 	}
 	item.texrender = nullptr;
+	item.big = nullptr;
 	item.stage = nullptr;
 	item.staged = false;
 }
@@ -139,6 +143,7 @@ void Thumbnails::disable()
 		for (auto &kv : items_) {
 			gpu.push_back(kv.second);
 			kv.second.texrender = nullptr;
+			kv.second.big = nullptr;
 			kv.second.stage = nullptr;
 			kv.second.staged = false;
 		}
@@ -217,16 +222,28 @@ void Thumbnails::on_rendered()
 
 	struct vec4 black;
 	vec4_set(&black, 0.0f, 0.0f, 0.0f, 1.0f);
+	// Each source's scene is drawn at up to four times the thumbnail's size,
+	// then made smaller with the area filter (every source pixel counted by
+	// how much of it a thumbnail pixel covers). Drawn straight at 256x144, a
+	// 1080p picture is sampled one pixel in seven: small text and fine
+	// patterns shimmer on the tiles.
+	const uint32_t bw = std::min<uint32_t>(ovi.base_width, width_ * 4);
+	const uint32_t bh = std::min<uint32_t>(ovi.base_height, height_ * 4);
+	gs_effect_t *area = obs_get_base_effect(OBS_EFFECT_AREA);
 	for (auto &kv : items_) {
 		Item &item = kv.second;
 		if (!item.texrender)
 			item.texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		if (!item.big && area)
+			item.big = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		if (!item.stage)
 			item.stage = gs_stagesurface_create(width_, height_, GS_RGBA);
 		if (!item.texrender || !item.stage)
 			continue;
-		gs_texrender_reset(item.texrender);
-		if (!gs_texrender_begin(item.texrender, width_, height_))
+		const bool two_steps = area && item.big && (bw > width_ || bh > height_);
+		gs_texrender_t *first = two_steps ? item.big : item.texrender;
+		gs_texrender_reset(first);
+		if (!gs_texrender_begin(first, two_steps ? bw : width_, two_steps ? bh : height_))
 			continue;
 		gs_clear(GS_CLEAR_COLOR, &black, 0.0f, 0);
 		gs_ortho(0.0f, (float)ovi.base_width, 0.0f, (float)ovi.base_height, -100.0f, 100.0f);
@@ -234,7 +251,29 @@ void Thumbnails::on_rendered()
 		gs_reset_blend_state();
 		obs_source_video_render(item.scene);
 		gs_blend_state_pop();
-		gs_texrender_end(item.texrender);
+		gs_texrender_end(first);
+		if (two_steps) {
+			gs_texture_t *tex = gs_texrender_get_texture(item.big);
+			gs_texrender_reset(item.texrender);
+			if (!tex || !gs_texrender_begin(item.texrender, width_, height_))
+				continue;
+			gs_ortho(0.0f, (float)bw, 0.0f, (float)bh, -100.0f, 100.0f);
+			const bool srgb = gs_framebuffer_srgb_enabled();
+			gs_enable_framebuffer_srgb(false);
+			gs_effect_set_texture(gs_effect_get_param_by_name(area, "image"), tex);
+			struct vec2 d;
+			vec2_set(&d, (float)bw, (float)bh);
+			gs_effect_set_vec2(gs_effect_get_param_by_name(area, "base_dimension"), &d);
+			vec2_set(&d, 1.0f / (float)bw, 1.0f / (float)bh);
+			gs_effect_set_vec2(gs_effect_get_param_by_name(area, "base_dimension_i"), &d);
+			gs_blend_state_push();
+			gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+			while (gs_effect_loop(area, "Draw"))
+				gs_draw_sprite(tex, 0, bw, bh);
+			gs_blend_state_pop();
+			gs_enable_framebuffer_srgb(srgb);
+			gs_texrender_end(item.texrender);
+		}
 		gs_stage_texture(item.stage, gs_texrender_get_texture(item.texrender));
 		item.staged = true;
 		collect_ = true;

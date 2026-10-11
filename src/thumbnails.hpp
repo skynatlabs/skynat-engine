@@ -43,6 +43,7 @@ private:
 		obs_source_t *scene = nullptr;
 		uint32_t channel = 0;
 		gs_texrender_t *texrender = nullptr;
+		gs_texrender_t *big = nullptr; // the scene at up to 4x the thumbnail, made smaller by area
 		gs_stagesurf_t *stage = nullptr;
 		bool staged = false;
 	};

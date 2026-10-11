@@ -1018,8 +1018,8 @@ std::string Engine::cmd_media(obs_data_t *cmd)
 }
 
 obs_encoder_t *Engine::create_video_encoder(const std::string &name, const std::string &want, uint32_t kbps,
-					    uint32_t keyint_sec, const char *profile, std::string *chosen,
-					    std::string *error)
+					    uint32_t keyint_sec, const char *profile, EncodeFor use,
+					    std::string *chosen, std::string *preset, std::string *error)
 {
 	std::vector<std::string> candidates;
 	if (want == "x264")
@@ -1032,6 +1032,7 @@ obs_encoder_t *Engine::create_video_encoder(const std::string &name, const std::
 	} else
 		candidates = {want};
 
+	const bool best = use == EncodeFor::Best;
 	for (const auto &id : candidates) {
 		if (!obs_get_encoder_codec(id.c_str()))
 			continue;
@@ -1040,37 +1041,66 @@ obs_encoder_t *Engine::create_video_encoder(const std::string &name, const std::
 		obs_data_set_string(s, "rate_control", "CBR");
 		obs_data_set_int(s, "keyint_sec", keyint_sec);
 		obs_data_set_string(s, "profile", profile);
+		// No B-frames anywhere: the app's FLV path writes frames in the
+		// order they arrive, with no composition-time offsets.
+		std::string described;
 		if (id == "obs_x264") {
-			obs_data_set_string(s, "preset", "veryfast");
-			obs_data_set_string(s, "tune", "zerolatency");
+			// A monitor feed must come out at once (zerolatency). The
+			// programme can wait a few frames for the encoder's look-ahead,
+			// which spends the bits where they show; "film" keeps fine detail.
+			const char *speed = best ? "faster" : "veryfast";
+			const char *tune = use == EncodeFor::Feed ? "zerolatency" : "film";
+			obs_data_set_string(s, "preset", speed);
+			obs_data_set_string(s, "tune", tune);
 			obs_data_set_int(s, "bf", 0);
 			// Keyframes exactly every keyint_sec, as the protocol promises
 			// (x264 would add one at every scene change, e.g. a clip looping).
 			obs_data_set_string(s, "x264opts", "scenecut=0");
+			described = std::string(speed) + ", " + tune;
 		} else if (id.rfind("com.apple.videotoolbox", 0) == 0) {
-			obs_data_set_bool(s, "bframes", false); // the FLV path assumes no reordering
+			obs_data_set_bool(s, "bframes", false);
 			// Intel Macs have no true CBR in VideoToolbox: average bitrate
 			// with a hard ceiling instead (ignored where CBR exists).
 			obs_data_set_bool(s, "limit_bitrate", true);
 			obs_data_set_int(s, "max_bitrate", kbps);
 			obs_data_set_double(s, "max_bitrate_window", 1.5);
+			described = "VideoToolbox, constant bitrate";
 		} else if (id.rfind("obs_qsv11", 0) == 0) {
 			// Intel Quick Sync calls it "bframes" (default 3): with "bf" only,
 			// it reordered frames that the FLV path stamps in arrival order —
 			// broken, blocky pictures on Intel graphics. Quality-leaning
-			// target usage (TU2 of 1..7) for a clean picture at the bitrate.
+			// target usage: TU2 of 1..7, TU1 (the best) for "best".
+			const char *tu = best ? "TU1" : "TU2";
 			obs_data_set_int(s, "bframes", 0);
 			obs_data_set_int(s, "bf", 0);
-			obs_data_set_string(s, "target_usage", "TU2");
+			obs_data_set_string(s, "target_usage", tu);
+			described = std::string("Quick Sync ") + tu;
+		} else if (id == "obs_nvenc_h264_tex" || id == "jim_nvenc") {
+			// NVENC: high-quality tuning, adaptive quantisation, two passes —
+			// p5 with a quarter-resolution first pass; "best": p6 with a full one.
+			const char *p = best ? "p6" : "p5";
+			const char *mp = best ? "fullres" : "qres";
+			obs_data_set_string(s, "preset", p);
+			obs_data_set_string(s, "preset2", p);
+			obs_data_set_string(s, "tune", "hq");
+			obs_data_set_string(s, "multipass", mp);
+			obs_data_set_bool(s, "adaptive_quantization", true);
+			obs_data_set_bool(s, "psycho_aq", true);
+			obs_data_set_int(s, "bf", 0);
+			described = std::string("NVENC ") + p + ", high quality, two-pass (" + (best ? "full" : "quarter") + ")";
 		} else {
-			// NVENC (preset p5, high quality, multipass by default) and AMD AMF.
+			// AMD AMF: its "quality" preset (its best for H.264).
+			obs_data_set_string(s, "preset", "quality");
 			obs_data_set_int(s, "bf", 0);
 			obs_data_set_int(s, "bframes", 0);
+			described = "AMF quality";
 		}
 		obs_encoder_t *enc = obs_video_encoder_create(id.c_str(), name.c_str(), s, nullptr);
 		obs_data_release(s);
 		if (enc) {
 			*chosen = id;
+			if (preset)
+				*preset = described;
 			return enc;
 		}
 	}
@@ -1145,10 +1175,15 @@ std::string Engine::cmd_start_output(obs_data_t *cmd)
 	const uint32_t akbps = (uint32_t)std::clamp<int64_t>(get_int(cmd, "audio_kbps", 160), 32, 320);
 	const uint32_t keyint = (uint32_t)std::clamp<int64_t>(get_int(cmd, "keyint_sec", 2), 1, 10);
 	std::string want = get_str(cmd, "encoder", "auto");
+	const std::string quality = get_str(cmd, "quality", "balanced");
+	if (quality != "balanced" && quality != "best")
+		throw CommandError("quality must be balanced or best");
+	const EncodeFor use = quality == "best" ? EncodeFor::Best : EncodeFor::Balanced;
 
 	std::string error;
 	for (int attempt = 0; attempt < 2; attempt++) {
-		venc_ = create_video_encoder("program-h264", want, kbps, keyint, "high", &venc_id_, &error);
+		venc_ = create_video_encoder("program-h264", want, kbps, keyint, "high", use, &venc_id_, &venc_preset_,
+					     &error);
 		if (!venc_)
 			throw CommandError(error);
 		obs_encoder_set_video(venc_, obs_get_video());
@@ -1182,6 +1217,8 @@ std::string Engine::cmd_start_output(obs_data_t *cmd)
 	writer_.event(JsonObj().str("event", "output").str("name", "program").str("state", "started").dump());
 	return JsonObj()
 		.str("encoder", venc_id_)
+		.str("preset", venc_preset_)
+		.str("quality", quality)
 		.boolean("hardware", venc_id_ != "obs_x264")
 		.str("audio_encoder", aenc_id_)
 		.integer("video_kbps", kbps)
@@ -1230,6 +1267,16 @@ void Engine::stop_feed(Feed &feed)
 	feed = Feed();
 }
 
+// The filter a monitor picture is made smaller with: area below the canvas's
+// size, bicubic above it (a monitor bigger than the canvas).
+static obs_scale_type monitor_scale(uint32_t w, uint32_t h)
+{
+	struct obs_video_info ovi;
+	if (obs_get_video_info(&ovi) && (w > ovi.base_width || h > ovi.base_height))
+		return OBS_SCALE_BICUBIC;
+	return OBS_SCALE_AREA;
+}
+
 std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 {
 	const bool on = get_bool(cmd, "on", true);
@@ -1255,14 +1302,17 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 
 	auto start = [&](Feed &feed, uint8_t feed_id, const char *name, video_t *video, bool scale) {
 		std::string chosen, error;
-		feed.encoder = create_video_encoder(name, want, kbps, 1, "main", &chosen, &error);
+		feed.encoder = create_video_encoder(name, want, kbps, 1, "main", EncodeFor::Feed, &chosen, nullptr, &error);
 		if (!feed.encoder)
 			throw CommandError(error);
 		if (scale) {
 			obs_encoder_set_scaled_size(feed.encoder, w, h);
-			// Bicubic, as the processor's scaler: the monitor looks the same either way.
+			// Made smaller with the area filter (every canvas pixel counted by
+			// how much of it a monitor pixel covers): OBS's bicubic reads a
+			// fixed 4x4 of the canvas, which skips pixels below full size —
+			// thin lines and small text shimmered on the monitors.
 			if (gpu_scale)
-				obs_encoder_set_gpu_scale_type(feed.encoder, OBS_SCALE_BICUBIC);
+				obs_encoder_set_gpu_scale_type(feed.encoder, monitor_scale(w, h));
 		}
 		obs_encoder_set_frame_rate_divisor(feed.encoder, divisor);
 		obs_encoder_set_video(feed.encoder, video);
@@ -1306,8 +1356,8 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 			obs_get_video_info(&ovi);
 			ovi.output_width = w;
 			ovi.output_height = h;
-			// Bicubic, as the Program feed and the canvas: a crisp monitor.
-			ovi.scale_type = OBS_SCALE_BICUBIC;
+			// As the Program feed: the area filter when made smaller.
+			ovi.scale_type = monitor_scale(w, h);
 			ovi.gpu_conversion = true;
 			preview_video_ = obs_view_add2(preview_view_, &ovi);
 			if (!preview_video_)

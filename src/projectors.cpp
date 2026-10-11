@@ -48,17 +48,19 @@ bool Projectors::parse_fit(const std::string &s, Fit *out)
 }
 
 // Program: the canvas libobs has just rendered (with every overlay), drawn
-// 1:1 where the display is the canvas's size, and with the bicubic filter
-// where it is scaled (OBS's own projectors use bilinear; bicubic keeps text
-// and edges sharp when a 1080p canvas fills a 4K screen). The same colour
-// handling as obs_render_main_texture.
+// 1:1 where the display is the canvas's size; with the bicubic filter where
+// it is enlarged (OBS's own projectors use bilinear; bicubic keeps text and
+// edges sharp when a 1080p canvas fills a 4K screen), and with the area
+// filter where it is made smaller (a 1366x768 projector: every canvas pixel
+// counted, none skipped). The same colour handling as obs_render_main_texture.
 static void render_program(int vw, int vh, float bw, float bh)
 {
 	gs_texture_t *tex = obs_get_main_texture();
 	if (!tex)
 		return;
 	const bool same = vw == (int)bw && vh == (int)bh;
-	gs_effect_t *effect = obs_get_base_effect(same ? OBS_EFFECT_DEFAULT : OBS_EFFECT_BICUBIC);
+	const bool smaller = (float)vw < bw || (float)vh < bh;
+	gs_effect_t *effect = obs_get_base_effect(same ? OBS_EFFECT_DEFAULT : smaller ? OBS_EFFECT_AREA : OBS_EFFECT_BICUBIC);
 	if (!effect)
 		effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	if (!effect)

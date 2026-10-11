@@ -96,9 +96,12 @@ private:
 	obs_data_t *camera_settings(obs_data_t *cmd, const std::string &device, bool *fast, std::string *error);
 	bool apply_common(Source &s, obs_data_t *cmd);
 	void apply_overlay_layout(Source &s, obs_data_t *cmd);
+	// What kind of picture an encoder is opened for: a monitor feed (low
+	// latency), or the programme at "balanced" or "best" quality.
+	enum class EncodeFor { Feed, Balanced, Best };
 	obs_encoder_t *create_video_encoder(const std::string &name, const std::string &want, uint32_t kbps,
-					    uint32_t keyint_sec, const char *profile, std::string *chosen,
-					    std::string *error);
+					    uint32_t keyint_sec, const char *profile, EncodeFor use,
+					    std::string *chosen, std::string *preset, std::string *error);
 	obs_encoder_t *create_audio_encoder(uint32_t kbps, std::string *chosen);
 	void stop_feed(Feed &feed);
 	void stop_program_output(PipeOutputStats *final_stats = nullptr);
@@ -129,6 +132,7 @@ private:
 	obs_encoder_t *aenc_ = nullptr;
 	obs_output_t *output_ = nullptr;
 	std::string venc_id_;
+	std::string venc_preset_;
 	std::string aenc_id_;
 	uint32_t video_kbps_ = 6000;
 
