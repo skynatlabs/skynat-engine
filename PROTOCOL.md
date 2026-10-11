@@ -135,9 +135,11 @@ Same as types 3 and 4 with one extra byte in front:
 
 Feeds are small hardware H.264 streams (default 854×480, 15 fps, 1000 kbit/s, Main profile,
 keyframe every second) for the app's monitors — decode them with WebCodecs `VideoDecoder`.
-The Program feed is scaled on the GPU from the program picture (nothing is rendered twice); the
-Preview feed renders the preview input into its own small mix. If the pipe backs up, feed packets
-are dropped first and the feed resumes at its next keyframe.
+The Program feed is a scaled copy of the program picture (nothing is rendered twice): by default
+libobs scales it in its video thread; `gpu_scale: true` scales it on the GPU instead (measured on
+an M2: the same CPU but about 2.5 ms more graphics-thread time per frame, so the CPU path is the
+default). The Preview feed renders the preview input into its own small mix. If the pipe backs
+up, feed packets are dropped first and the feed resumes at its next keyframe.
 
 ### 11 — thumbnail
 
@@ -183,7 +185,7 @@ own unsigned 32-bit numbers.
 | `start_output` | `video_kbps` (default 6000), `audio_kbps` (160), `keyint_sec` (2), `encoder`: `auto` (hardware, else x264) / `hardware` / `x264` / an encoder id | `{encoder, hardware, audio_encoder, video_kbps, audio_kbps, keyint_sec}` |
 | `stop_output` | — | `{was_running, video_packets, audio_packets}` after the encoders drained |
 | `set_bitrate` | `kbps` | `{kbps, encoder}` — applies live, no restart |
-| `preview_feed` | `on`, `width` (854), `height` (480), `fps` (15), `kbps` (1000), `program` (true), `preview` (true), `encoder` | `{on, width, height, fps, kbps, program, preview}` |
+| `preview_feed` | `on`, `width` (854), `height` (480), `fps` (15), `kbps` (1000), `program` (true), `preview` (true), `encoder`, `gpu_scale` (false) | `{on, width, height, fps, kbps, program, preview}` — sending it again with other size/rate/bitrate restarts the running feeds |
 | `thumbnails` | `on`, `width` (256), `height` (144), `fps` (2) | `{on, width, height, fps}` |
 | `stats` | `interval_ms` (optional: 0 stops, > 0 sends `stats` events at that interval) | stats (see `stats` event) |
 | `shutdown` | — | the result, then a `shutdown` event, then the process exits with code 0 |

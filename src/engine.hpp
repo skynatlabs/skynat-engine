@@ -129,6 +129,7 @@ private:
 
 	Feed feed_program_;
 	Feed feed_preview_;
+	std::string feed_params_;
 	std::unique_ptr<Thumbnails> thumbs_;
 
 	std::vector<std::string> hw_encoders_;

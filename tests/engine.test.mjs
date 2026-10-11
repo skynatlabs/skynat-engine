@@ -358,6 +358,19 @@ async function main() {
   const after = (await client.stats()).sources;
   check('sources can be removed while on air', after === before - 2, `${before} -> ${after}`);
 
+  // Changing a running feed's size restarts it with the new size.
+  const feedCfgs = [];
+  const onFeedCfg = (c) => feedCfgs.push(c);
+  client.on('feedConfig', onFeedCfg);
+  await client.previewFeed({ on: true, program: true, preview: false, width: 640, height: 360, fps: 10 });
+  await sleep(700);
+  await client.previewFeed({ on: true, program: true, preview: false, width: 426, height: 240, fps: 10 });
+  await sleep(700);
+  await client.previewFeed({ on: false });
+  client.off('feedConfig', onFeedCfg);
+  check('monitor feed restarts with new parameters', feedCfgs.length >= 2 && feedCfgs[0].width === 640 && feedCfgs.at(-1).width === 426 && feedCfgs.at(-1).height === 240 && feedCfgs.at(-1).fpsNum / feedCfgs.at(-1).fpsDen === 10,
+    feedCfgs.map((c) => `${c.width}x${c.height}@${c.fpsNum / c.fpsDen}`).join(' -> '));
+
   let missing = '';
   try { await client.addSource({ id: 5, type: 'media', path: join(OUT_DIR, 'no-such-file.mp4') }); } catch (e) { missing = e.message; }
   check('a missing media file is an error result', /file not found/.test(missing), missing);

@@ -34,6 +34,9 @@ public:
 	void clear();
 
 	uint64_t sent() const { return sent_; }
+	uint32_t width() const { return width_; }
+	uint32_t height() const { return height_; }
+	double fps() const { return interval_ > 0.0 ? 1.0 / interval_ : 0.0; }
 
 private:
 	struct Item {

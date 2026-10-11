@@ -516,7 +516,9 @@ std::string Engine::cmd_configure(obs_data_t *cmd)
 	if (has(cmd, "bitrate"))
 		video_kbps_ = (uint32_t)get_int(cmd, "bitrate", video_kbps_);
 
-	bool thumbs_on = thumbs_->enabled();
+	const bool thumbs_on = thumbs_->enabled();
+	const uint32_t thumb_w = thumbs_->width(), thumb_h = thumbs_->height();
+	const double thumb_fps = thumbs_->fps();
 	if (thumbs_on)
 		thumbs_->disable();
 	std::string error;
@@ -535,7 +537,7 @@ std::string Engine::cmd_configure(obs_data_t *cmd)
 		}
 	}
 	if (thumbs_on)
-		thumbs_->enable(0, 0, 0); // defaults; the app re-sends its settings if it wants others
+		thumbs_->enable(thumb_w, thumb_h, thumb_fps);
 	return JsonObj()
 		.integer("width", w)
 		.integer("height", h)
@@ -1248,6 +1250,19 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 		}
 		return chosen;
 	};
+
+	// New size, rate, bitrate or encoder for running feeds: restart them.
+	const std::string params = std::to_string(w) + "x" + std::to_string(h) + "@" + std::to_string(divisor) + "/" +
+				   std::to_string(kbps) + "/" + want + (gpu_scale ? "/gpu" : "/cpu");
+	if (params != feed_params_ && (feed_program_.output || feed_preview_.output)) {
+		stop_feed(feed_program_);
+		stop_feed(feed_preview_);
+		if (preview_video_) {
+			obs_view_remove(preview_view_);
+			preview_video_ = nullptr;
+		}
+	}
+	feed_params_ = params;
 
 	std::string program_enc, preview_enc;
 	if (want_program && !feed_program_.output)
