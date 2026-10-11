@@ -136,9 +136,11 @@ Same as types 3 and 4 with one extra byte in front:
 Feeds are small hardware H.264 streams (default 854×480, 15 fps, 1000 kbit/s, Main profile,
 keyframe every second) for the app's monitors — decode them with WebCodecs `VideoDecoder`.
 The Program feed is a scaled copy of the program picture (nothing is rendered twice): by default
-libobs scales it in its video thread; `gpu_scale: true` scales it on the GPU instead (measured on
-an M2: the same CPU but about 2.5 ms more graphics-thread time per frame, so the CPU path is the
-default). The Preview feed renders the preview input into its own small mix. If the pipe backs
+libobs scales it in its video thread; `gpu_scale: true` scales it on the GPU instead (bicubic,
+like the processor's scaler). Measured on an M2: while Program is also being encoded, about the
+same CPU and ~2.5 ms more graphics-thread time per frame; with nothing recorded or streamed, the
+GPU path spares the whole canvas's readback (engine 21.6 → 19.4 % of a core with two 1080p30
+clips and both feeds), so the app asks for it. The CPU path stays the default. The Preview feed renders the preview input into its own small mix. If the pipe backs
 up, feed packets are dropped first and the feed resumes at its next keyframe.
 
 ### 11 — thumbnail

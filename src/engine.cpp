@@ -1241,8 +1241,9 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 			throw CommandError(error);
 		if (scale) {
 			obs_encoder_set_scaled_size(feed.encoder, w, h);
+			// Bicubic, as the processor's scaler: the monitor looks the same either way.
 			if (gpu_scale)
-				obs_encoder_set_gpu_scale_type(feed.encoder, OBS_SCALE_BILINEAR);
+				obs_encoder_set_gpu_scale_type(feed.encoder, OBS_SCALE_BICUBIC);
 		}
 		obs_encoder_set_frame_rate_divisor(feed.encoder, divisor);
 		obs_encoder_set_video(feed.encoder, video);
