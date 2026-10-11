@@ -348,7 +348,7 @@ async function main() {
   const tOut = Date.now();
   const at = (s) => sleep(Math.max(0, tOut + s * 1000 - Date.now()));
 
-  await client.previewFeed({ on: true, width: 854, height: 480, fps: 15, kbps: 800 });
+  await client.previewFeed({ on: true, width: 854, height: 480, fps: 15, preview_fps: 10, kbps: 800 });
   await client.thumbnails({ on: true, width: 256, height: 144, fps: 4 });
 
   // Steady-state measurement window: t = 1 s .. 3.9 s and 6.5 .. 9.5 s.
@@ -536,13 +536,14 @@ async function main() {
   const fw = Math.min(854, W) & ~1, fh = Math.min(480, H) & ~1;
   for (const id of [0, 1]) {
     const name = id === 0 ? 'Program' : 'Preview';
+    const rate = id === 0 ? 15 : 10;   // Preview at its own rate (preview_fps)
     const c = feedCfg[id];
-    check(`${name} feed config ${fw}x${fh} @ 15 fps`, c && c.width === fw && c.height === fh && c.fpsNum / c.fpsDen === 15,
+    check(`${name} feed config ${fw}x${fh} @ ${rate} fps`, c && c.width === fw && c.height === fh && c.fpsNum / c.fpsDen === rate,
       c ? `${c.width}x${c.height} ${c.fpsNum}/${c.fpsDen} ${c.kbps} kbps` : 'none');
     const fp = feeds[id];
     const fspan = fp.length > 1 ? (fp[fp.length - 1].ptsUs - fp[0].ptsUs) / 1e6 : 0;
     check(`${name} feed starts on a keyframe`, fp.length > 0 && fp[0].keyframe, `${fp.length} packets`);
-    rt(`${name} feed ~15 fps`, fp.length > 1 && Math.abs((fp.length - 1) / fspan - 15) < 1, `${fp.length} packets over ${fspan.toFixed(1)} s`);
+    rt(`${name} feed ~${rate} fps`, fp.length > 1 && Math.abs((fp.length - 1) / fspan - rate) < 1, `${fp.length} packets over ${fspan.toFixed(1)} s`);
     const ff = join(OUT_DIR, `feed-${id}.flv`);
     writeFileSync(ff, feedFlv[id].bytes());
     const fprobe = ffmpeg(['-i', ff]);

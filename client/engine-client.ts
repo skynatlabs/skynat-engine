@@ -587,7 +587,7 @@ export class EngineClient {
   }
   stopOutput() { return this.command('stop_output', {}, 15000); }
   setBitrate(kbps: number) { return this.command('set_bitrate', { kbps }); }
-  previewFeed(a: { on: boolean; width?: number; height?: number; fps?: number; kbps?: number; program?: boolean; preview?: boolean }) {
+  previewFeed(a: { on: boolean; width?: number; height?: number; fps?: number; preview_fps?: number; kbps?: number; program?: boolean; preview?: boolean }) {
     return this.command('preview_feed', a, 15000);
   }
   thumbnails(a: { on: boolean; width?: number; height?: number; fps?: number }) { return this.command('thumbnails', a); }

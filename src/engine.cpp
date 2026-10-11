@@ -1297,10 +1297,14 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 	const uint32_t kbps = (uint32_t)std::clamp<int64_t>(get_int(cmd, "kbps", 1000), 100, 20000);
 	const double main_fps = (double)opt_.fps_num / opt_.fps_den;
 	const uint32_t divisor = (uint32_t)std::max<long>(1, std::lround(main_fps / fps));
+	// Preview may run at a lower rate than Program (a monitor for choosing the
+	// next shot: half the canvas rate is what the app's own Preview draws).
+	const double preview_fps = std::clamp(get_double(cmd, "preview_fps", fps), 1.0, 60.0);
+	const uint32_t preview_divisor = (uint32_t)std::max<long>(1, std::lround(main_fps / preview_fps));
 	const std::string want = get_str(cmd, "encoder", "auto");
 	const bool gpu_scale = get_bool(cmd, "gpu_scale", false);
 
-	auto start = [&](Feed &feed, uint8_t feed_id, const char *name, video_t *video, bool scale) {
+	auto start = [&](Feed &feed, uint8_t feed_id, const char *name, video_t *video, bool scale, uint32_t div) {
 		std::string chosen, error;
 		feed.encoder = create_video_encoder(name, want, kbps, 1, "main", EncodeFor::Feed, &chosen, nullptr, &error);
 		if (!feed.encoder)
@@ -1314,7 +1318,7 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 			if (gpu_scale)
 				obs_encoder_set_gpu_scale_type(feed.encoder, monitor_scale(w, h));
 		}
-		obs_encoder_set_frame_rate_divisor(feed.encoder, divisor);
+		obs_encoder_set_frame_rate_divisor(feed.encoder, div);
 		obs_encoder_set_video(feed.encoder, video);
 		obs_data_t *s = obs_data_create();
 		obs_data_set_int(s, "feed", feed_id);
@@ -1332,8 +1336,9 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 	};
 
 	// New size, rate, bitrate or encoder for running feeds: restart them.
-	const std::string params = std::to_string(w) + "x" + std::to_string(h) + "@" + std::to_string(divisor) + "/" +
-				   std::to_string(kbps) + "/" + want + (gpu_scale ? "/gpu" : "/cpu");
+	const std::string params = std::to_string(w) + "x" + std::to_string(h) + "@" + std::to_string(divisor) + "," +
+				   std::to_string(preview_divisor) + "/" + std::to_string(kbps) + "/" + want +
+				   (gpu_scale ? "/gpu" : "/cpu");
 	if (params != feed_params_ && (feed_program_.output || feed_preview_.output)) {
 		stop_feed(feed_program_);
 		stop_feed(feed_preview_);
@@ -1346,7 +1351,7 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 
 	std::string program_enc, preview_enc;
 	if (want_program && !feed_program_.output)
-		program_enc = start(feed_program_, FEED_PROGRAM, "feed-program", obs_get_video(), true);
+		program_enc = start(feed_program_, FEED_PROGRAM, "feed-program", obs_get_video(), true, divisor);
 	else if (!want_program)
 		stop_feed(feed_program_);
 
@@ -1363,7 +1368,7 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 			if (!preview_video_)
 				throw CommandError("could not create the preview video mix");
 		}
-		preview_enc = start(feed_preview_, FEED_PREVIEW, "feed-preview", preview_video_, false);
+		preview_enc = start(feed_preview_, FEED_PREVIEW, "feed-preview", preview_video_, false, preview_divisor);
 	} else if (!want_preview) {
 		stop_feed(feed_preview_);
 		if (preview_video_) {
@@ -1376,6 +1381,7 @@ std::string Engine::cmd_preview_feed(obs_data_t *cmd)
 		.integer("width", w)
 		.integer("height", h)
 		.number("fps", main_fps / divisor)
+		.number("preview_fps", main_fps / preview_divisor)
 		.integer("kbps", kbps)
 		.boolean("program", feed_program_.output != nullptr)
 		.boolean("preview", feed_preview_.output != nullptr)
