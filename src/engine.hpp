@@ -93,6 +93,7 @@ private:
 	// helpers
 	bool reset_video(uint32_t w, uint32_t h, uint32_t fps_num, uint32_t fps_den, std::string *error);
 	void fit_to_canvas(obs_sceneitem_t *item);
+	void update_scale_filters();
 	obs_data_t *camera_settings(obs_data_t *cmd, const std::string &device, bool *fast, std::string *error);
 	bool apply_common(Source &s, obs_data_t *cmd);
 	void apply_overlay_layout(Source &s, obs_data_t *cmd);
@@ -148,6 +149,7 @@ private:
 	// periodic stats (graphics thread tick -> main thread)
 	std::atomic<uint32_t> stats_interval_ms_{0};
 	double stats_elapsed_ = 0.0;
+	double scale_elapsed_ = 0.0; // see update_scale_filters
 	double last_cpu_ = 0.0;
 	uint64_t last_cpu_wall_ = 0;
 	uint64_t startup_ns_ = 0;

@@ -659,12 +659,20 @@ async function main() {
   for (let i = 0; i < 60 && !events.some((e) => e.ev.event === 'media' && e.ev.id === 6); i++) await sleep(100);
   const ended = events.find((e) => e.ev.event === 'media' && e.ev.id === 6);
   check('non-looping media reports "ended"', !!ended, ended ? `after ${ended.at - endedAt} ms` : 'no event');
+  let up = null;
+  for (let i = 0; i < 20 && !(up?.bicubic >= 1); i++) { up = (await client.stats()).scaled; await sleep(100); }
+  check('a clip smaller than the canvas is enlarged with bicubic (not bilinear)', up?.bicubic >= 1, JSON.stringify(up));
   await client.removeSource(6);
 
   // Change the canvas (outputs stopped), encode a moment at 60 fps on another size, and back
   // (1280x720; a third of the canvas on a CPU-rendered runner).
   const alt = softwareRenderer ? { w: (W / 3) & ~1, h: (H / 3) & ~1 } : { w: 1280, h: 720 };
   const cfg = await client.configure({ width: alt.w, height: alt.h, fps: 60 });
+  await client.addSource({ id: 8, type: 'media', path: clip, loop: true, ...(softwareRenderer ? { hw_decode: false } : {}) });
+  let down = null;
+  for (let i = 0; i < 30 && !(down?.area >= 1); i++) { down = (await client.stats()).scaled; await sleep(100); }
+  check('…and one bigger than the canvas made smaller with the area filter', down?.area >= 1, JSON.stringify(down));
+  await client.removeSource(8);
   let cfg720 = null, n720 = 0;
   const onCfg = (c) => { cfg720 = c; }, onPkt = () => { n720++; };
   client.on('videoConfig', onCfg); client.on('videoPacket', onPkt);

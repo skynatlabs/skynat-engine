@@ -507,6 +507,29 @@ void Engine::fit_to_canvas(obs_sceneitem_t *item)
 	obs_sceneitem_set_bounds(item, &bounds);
 }
 
+// How each camera and clip is scaled to the canvas, from its own size (known
+// only once it delivers frames, and it may change): bicubic when it is
+// enlarged (a 720p camera on a 1080p canvas — bilinear left it soft), the
+// area filter when it is made smaller (a 4K camera, a portrait phone video
+// fitted to the canvas's height — bilinear skipped pixels and shimmered),
+// neither at its own size. libobs then draws it through a texture at its
+// own size and scales that once. Main thread, twice a second.
+void Engine::update_scale_filters()
+{
+	for (auto &kv : sources_) {
+		Source &s = kv.second;
+		if (!s.wrapper_item || !s.source || (s.type != "camera" && s.type != "media"))
+			continue;
+		const uint32_t sw = obs_source_get_width(s.source), sh = obs_source_get_height(s.source);
+		if (!sw || !sh)
+			continue;
+		const double k = std::min((double)opt_.width / sw, (double)opt_.height / sh);
+		const obs_scale_type want = k > 1.01 ? OBS_SCALE_BICUBIC : k < 0.99 ? OBS_SCALE_AREA : OBS_SCALE_DISABLE;
+		if (obs_sceneitem_get_scale_filter(s.wrapper_item) != want)
+			obs_sceneitem_set_scale_filter(s.wrapper_item, want);
+	}
+}
+
 std::string Engine::cmd_configure(obs_data_t *cmd)
 {
 	if (any_output_active() || feed_program_.output || feed_preview_.output)
@@ -1455,6 +1478,18 @@ std::string Engine::stats_json()
 		.integer("bulk_dropped", (int64_t)writer_.bulk_dropped())
 		.integer("media_dropped", (int64_t)writer_.media_dropped());
 
+	// Cameras and clips scaled to the canvas, by filter (update_scale_filters).
+	int64_t bicubic = 0, area = 0;
+	for (const auto &kv : sources_) {
+		if (!kv.second.wrapper_item)
+			continue;
+		const obs_scale_type t = obs_sceneitem_get_scale_filter(kv.second.wrapper_item);
+		bicubic += t == OBS_SCALE_BICUBIC;
+		area += t == OBS_SCALE_AREA;
+	}
+	JsonObj scaled;
+	scaled.integer("bicubic", bicubic).integer("area", area);
+
 	JsonObj s;
 	s.number("render_ms", obs_get_average_frame_time_ns() / 1e6)
 		.number("fps", (double)opt_.fps_num / opt_.fps_den)
@@ -1474,7 +1509,8 @@ std::string Engine::stats_json()
 		.integer("memory_mb", (int64_t)(platform::resident_bytes() / (1024 * 1024)))
 		.raw("pipe", pipe.dump())
 		.number("uptime_s", (now - startup_ns_) / 1e9)
-		.integer("sources", (int64_t)sources_.size());
+		.integer("sources", (int64_t)sources_.size())
+		.raw("scaled", scaled.dump());
 	return s.dump();
 }
 
@@ -1525,6 +1561,14 @@ std::string Engine::cmd_stats(obs_data_t *cmd)
 void Engine::stats_tick(void *param, float seconds)
 {
 	auto *self = static_cast<Engine *>(param);
+	self->scale_elapsed_ += seconds;
+	if (self->scale_elapsed_ >= 0.5 && !self->shutting_down_.load()) {
+		self->scale_elapsed_ = 0.0;
+		platform::post_main([self]() {
+			if (!self->shutting_down_.load())
+				self->update_scale_filters();
+		});
+	}
 	const uint32_t interval = self->stats_interval_ms_.load();
 	if (!interval || self->shutting_down_.load()) {
 		self->stats_elapsed_ = 0.0;
