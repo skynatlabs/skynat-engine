@@ -136,6 +136,19 @@ function blueTimeline(file, rate = 10) {
   }
   return out;
 }
+/**
+ * Level of a tone: the Goertzel amplitude over 0.25 s windows (4 Hz wide bins),
+ * averaged. One long window would be a fraction of a hertz wide, and the
+ * engine's clock steering (one sample dropped or repeated per block when the
+ * app's sound card drifts) moves a tone by about a hertz.
+ */
+function toneLevel(samples, rate, freq) {
+  const n = Math.floor(rate / 4);
+  if (samples.length < n) return goertzel(samples, rate, freq);
+  let sum = 0, count = 0;
+  for (let o = 0; o + n <= samples.length; o += n) { sum += goertzel(samples.subarray(o, o + n), rate, freq); count++; }
+  return sum / count;
+}
 function goertzel(samples, rate, freq) {
   const k = Math.round((samples.length * freq) / rate);
   const w = (2 * Math.PI * k) / samples.length;
@@ -153,7 +166,8 @@ async function main() {
 
   // 1. Main session (the test clip is made once the canvas size is known).
   const log = engineLog;
-  const client = new EngineClient({ executable: ENGINE, args: ['--log-level', 'info'], restart: false, startTimeoutMs: 20000, onLog: (l) => log.push(l) });
+  // On runners the engine logs at debug level (libobs's own audio/timing notes), for the saved log.
+  const client = new EngineClient({ executable: ENGINE, args: ['--log-level', CI ? 'debug' : 'info'], restart: false, startTimeoutMs: 20000, onLog: (l) => log.push(l) });
   const startEvents = [];
   const onStartEvent = (ev) => startEvents.push(ev);
   client.on('event', onStartEvent);
@@ -449,8 +463,13 @@ async function main() {
   const isBlueS = (s) => s.d < 25, isMediaS = (s) => s.d > 100;
   const iCut = tl.findIndex((s, i) => i > 0 && isBlueS(s) && isMediaS(tl[i - 1]));
   const iFade = iCut > 0 ? tl.findIndex((s, i) => i > iCut && !isBlueS(s)) : -1;
-  const iBack = iFade > 0 ? tl.findIndex((s, i) => i >= iFade && isMediaS(s)) : -1;
-  const tCut = iCut > 0 ? tl[iCut].t : NaN, tFade = iFade > 0 ? tl[iFade].t : NaN, tBack = iBack > 0 ? tl[iBack].t : NaN;
+  const tCut = iCut > 0 ? tl[iCut].t : NaN, tFade = iFade > 0 ? tl[iFade].t : NaN;
+  // The fade has (nearly) ended when the picture is within 10 % of the media's
+  // level in the two seconds after it began; the samples before that are the mix.
+  const afterFade = iFade > 0 ? tl.filter((s) => s.t >= tFade && s.t <= tFade + 2.0) : [];
+  const mediaAgain = afterFade.length ? Math.max(...afterFade.map((s) => s.d)) : NaN;
+  const iBack = iFade > 0 && mediaAgain > 100 ? tl.findIndex((s, i) => i >= iFade && s.d >= 0.9 * mediaAgain) : -1;
+  const tBack = iBack > 0 ? tl[iBack].t : NaN;
   const mix = iFade > 0 && iBack > iFade ? tl.slice(iFade, iBack) : [];
   note('Program timeline (distance from blue, 10/s)', tl.map((s) => s.d.toFixed(0)).join(' '));
   check('set_program cut: media -> blue from one frame to the next', iCut > 0,
@@ -458,7 +477,7 @@ async function main() {
   rt('the cut is on air when commanded (±0.5 s)', Math.abs(tCut - cutPts) < 0.5, `commanded ${cutPts.toFixed(2)} s, seen ${tCut.toFixed(1)} s`);
   const rising = mix.every((s, i) => i === 0 || s.d >= mix[i - 1].d - 10);
   check('set_program fade: blue -> mix -> media', mix.length >= 1 && rising && iBack > 0,
-    mix.length ? `blue, then ${mix.map((s) => s.d.toFixed(0)).join(' ')}, then media (${tl[iBack].d.toFixed(0)})` : 'no fade found');
+    mix.length ? `blue, then ${mix.map((s) => s.d.toFixed(0)).join(' ')}, then media (${tl[iBack].d.toFixed(0)})` : `no fade found (media level after it: ${mediaAgain})`);
   rt('the fade starts when commanded and lasts ~1 s', Math.abs(tFade - fadePts) < 0.5 && tBack - tFade > 0.6 && tBack - tFade < 1.4,
     `commanded ${fadePts.toFixed(2)} s, seen ${tFade.toFixed(1)}–${tBack.toFixed(1)} s`);
 
@@ -491,8 +510,8 @@ async function main() {
   const samples = pcm.stdout ? new Float32Array(pcm.stdout.buffer, pcm.stdout.byteOffset, Math.floor(pcm.stdout.length / 4)) : new Float32Array(0);
   const seg = (fromS, toS) => samples.subarray(Math.floor(fromS * 48000), Math.floor(toS * 48000));
   const onAir = [1.0, Number.isFinite(tCut) ? tCut - 0.2 : 3.5], offAir = [tCut + 0.3, tFade - 0.1];
-  const t1k = goertzel(seg(...onAir), 48000, 1000), t440 = goertzel(seg(...onAir), 48000, 440);
-  const t1kBlue = goertzel(seg(...offAir), 48000, 1000), t440Blue = goertzel(seg(...offAir), 48000, 440);
+  const t1k = toneLevel(seg(...onAir), 48000, 1000), t440 = toneLevel(seg(...onAir), 48000, 440);
+  const t1kBlue = toneLevel(seg(...offAir), 48000, 1000), t440Blue = toneLevel(seg(...offAir), 48000, 440);
   check('PCM tone (1 kHz) present in Program audio', t1k > 0.05 && t1kBlue > 0.05, `amplitude ${t1k.toFixed(3)} / ${t1kBlue.toFixed(3)}`);
   check('media audio (440 Hz) on Program while the clip is on air', t440 > 0.05, `amplitude ${t440.toFixed(3)} (${onAir.map((v) => v.toFixed(1)).join('–')} s)`);
   check('media audio leaves Program with the clip (cut to blue)', t440Blue < t440 / 5, `amplitude ${t440Blue.toFixed(3)} (${offAir.map((v) => v.toFixed(1)).join('–')} s)`);
