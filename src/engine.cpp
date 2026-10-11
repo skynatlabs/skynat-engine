@@ -260,8 +260,8 @@ bool Engine::startup(std::string *error)
 
 	obs_add_tick_callback(stats_tick, this);
 	started_ = true;
-	blog(LOG_INFO, "[skynat-engine] started: %ux%u %u/%u fps, renderer %s, %zu modules, h264 hw: %s",
-	     opt_.width, opt_.height, opt_.fps_num, opt_.fps_den, g_graphics_module.c_str(), loaded.size(),
+	blog(LOG_INFO, "[skynat-engine] started: %ux%u %u/%u fps, renderer %s, %u modules, h264 hw: %s",
+	     opt_.width, opt_.height, opt_.fps_num, opt_.fps_den, g_graphics_module.c_str(), (unsigned)loaded.size(),
 	     hw_encoders_.empty() ? "none" : hw_encoders_[0].c_str());
 	return true;
 }

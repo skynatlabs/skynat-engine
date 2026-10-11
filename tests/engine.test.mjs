@@ -131,6 +131,10 @@ async function main() {
   await client.addSource({ id: 2, type: 'color', color: '#0000ff' });
   await client.addSource({ id: 10, type: 'overlay', width: 400, height: 200, x: 100, y: 100 });
   await client.addSource({ id: 20, type: 'pcm' });
+  // An image input (magenta PNG made with ffmpeg) — checked through its thumbnail.
+  const png = join(OUT_DIR, 'magenta.png');
+  if (!existsSync(png)) ffmpeg(['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0xff00ff:s=320x180', '-frames:v', '1', png]);
+  await client.addSource({ id: 4, type: 'image', path: png });
   let camOk = null;
   if (process.env.SKYNAT_TEST_CAMERA === '1' && devices.cameras.length) {
     try { const r = await client.addSource({ id: 3, type: 'camera', device: devices.cameras[0].id }); camOk = r; } catch (e) { camOk = e.message; }
@@ -142,6 +146,11 @@ async function main() {
   for (let i = 0; i < red.length; i += 4) { red[i] = 255; red[i + 1] = 0; red[i + 2] = 0; red[i + 3] = 255; }
   client.sendOverlay(10, 0, 0, 400, 100, 1600, red, true);
   client.sendOverlay(10, 0, 100, 400, 100, 1600, red.subarray(400 * 100 * 4));
+  // A second layer: 50 % white, straight alpha, at (1200, 600) 200x100.
+  await client.addSource({ id: 11, type: 'overlay', width: 200, height: 100, x: 1200, y: 600 });
+  const half = Buffer.alloc(200 * 100 * 4);
+  for (let i = 0; i < half.length; i += 4) { half[i] = 255; half[i + 1] = 255; half[i + 2] = 255; half[i + 3] = 128; }
+  client.sendOverlay(11, 0, 0, 200, 100, 800, half);
 
   await client.setProgram(1, 'cut');
   await client.setPreview(2);
@@ -275,6 +284,9 @@ async function main() {
   const isRed = (p) => p[0] > 200 && p[1] < 60 && p[2] < 60, isBlue = (p) => p[2] > 200 && p[0] < 60 && p[1] < 60;
   check('overlay covers exactly its rectangle (x 100-499, y 100-299)', edge && isRed(edge[0]) && isRed(edge[1]) && edge.slice(2).every(isBlue),
     edge && edge.map((p) => p.join('/')).join(' '));
+  const semi = afterCut && rgbAt(afterCut, 1920, 1300, 650);
+  check('semi-transparent overlay blends (50 % white over blue)', semi && Math.abs(semi[0] - 128) < 30 && Math.abs(semi[1] - 128) < 30 && semi[2] > 225,
+    semi && semi.join(','));
   const fadePts = ptsOf(fadeWall);
   const fd = [-0.25, 0.5, 1.6].map((dt) => { const f = decodeFrame(flvFile, fadePts + dt, 1920, 1080); return f ? blueDistance(f) : NaN; });
   check('set_program fade (1 s): blue -> mix -> media', fd[0] < 25 && fd[1] > fd[0] + 15 && fd[1] < fd[2] - 15 && fd[2] > 100,
@@ -318,6 +330,9 @@ async function main() {
     `media ${th1.length}, colour ${th2.length}`);
   const px = th2[th2.length - 1]?.px || [];
   check('colour thumbnail is blue', px[2] > 200 && px[0] < 40 && px[1] < 40, px.join(','));
+  const th4 = thumbs.get(4) || [];
+  const ipx = th4[th4.length - 1]?.px || [];
+  check('image input renders (magenta PNG thumbnail)', th4.length >= 3 && ipx[0] > 200 && ipx[1] < 40 && ipx[2] > 200, `${th4.length} thumbnails, ${ipx.join(',')}`);
 
   // ---- stats ------------------------------------------------------------------
   const cpuPs = ((cpu2 - cpu1) / ((w2 - w1) / 1000)) * 100;
@@ -331,15 +346,54 @@ async function main() {
   check('PCM steered without resyncs', st.pcm[0] && st.pcm[0].resyncs === 0, st.pcm[0] ? JSON.stringify(st.pcm[0]) : 'none');
   check('stop_output drained the encoders', stopRes.was_running && stopRes.video_packets === video.length, `${stopRes.video_packets} video packets`);
   check('no pipe drops', finalStats.pipe.media_dropped === 0, JSON.stringify(finalStats.pipe));
-  check('overlay updates applied', finalStats.overlay_updates === 2, finalStats.overlay_updates);
+  check('overlay updates applied', finalStats.overlay_updates === 3, finalStats.overlay_updates);
   const errors = events.filter((e) => e.ev.event === 'error');
   check('no error events', errors.length === 0, errors.map((e) => e.ev.message).join(' | '));
 
   // Remove a source that is on Program -> black, no crash.
   await client.setProgram(2, 'cut');
+  const before = (await client.stats()).sources;
   await client.removeSource(2);
   await client.removeSource(1);
-  check('sources can be removed while on air', (await client.stats()).sources === 2);
+  const after = (await client.stats()).sources;
+  check('sources can be removed while on air', after === before - 2, `${before} -> ${after}`);
+
+  let missing = '';
+  try { await client.addSource({ id: 5, type: 'media', path: join(OUT_DIR, 'no-such-file.mp4') }); } catch (e) { missing = e.message; }
+  check('a missing media file is an error result', /file not found/.test(missing), missing);
+
+  // A one-second clip that does not loop ends with a "media" event.
+  const short = join(OUT_DIR, 'clip-1s.mp4');
+  if (!existsSync(short)) ffmpeg(['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30', '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', short]);
+  const endedAt = Date.now();
+  await client.addSource({ id: 6, type: 'media', path: short, loop: false });
+  await client.setProgram(6, 'cut');
+  for (let i = 0; i < 60 && !events.some((e) => e.ev.event === 'media' && e.ev.id === 6); i++) await sleep(100);
+  const ended = events.find((e) => e.ev.event === 'media' && e.ev.id === 6);
+  check('non-looping media reports "ended"', !!ended, ended ? `after ${ended.at - endedAt} ms` : 'no event');
+  await client.removeSource(6);
+
+  // Change the canvas (outputs stopped), encode a moment at 1280x720 60 fps, and back.
+  const cfg = await client.configure({ width: 1280, height: 720, fps: 60 });
+  let cfg720 = null, n720 = 0;
+  const onCfg = (c) => { cfg720 = c; }, onPkt = () => { n720++; };
+  client.on('videoConfig', onCfg); client.on('videoPacket', onPkt);
+  await client.addSource({ id: 7, type: 'color', color: '#00ff00' });
+  await client.setProgram(7);
+  const x264 = await client.startOutput({ video_kbps: 3000, encoder: 'x264' });
+  await sleep(1500);
+  await client.stopOutput();
+  check('software x264 only when asked for', x264.encoder === 'obs_x264' && x264.hardware === false && n720 > 30, `${x264.encoder}, ${n720} packets`);
+  client.off('videoConfig', onCfg); client.off('videoPacket', onPkt);
+  const st720 = await client.stats();
+  check('configure: 1280x720 at 60 fps', cfg.width === 1280 && cfg.fps_num === 60 && cfg720 && cfg720.width === 1280 && cfg720.height === 720 && cfg720.fpsNum === 60 && st720.fps === 60,
+    `${cfg720 ? `${cfg720.width}x${cfg720.height} ${cfg720.fpsNum}/${cfg720.fpsDen}` : 'no config'}, ${n720} packets in 1.5 s`);
+  let busy = '';
+  await client.startOutput({ video_kbps: 3000 });
+  try { await client.configure({ width: 1920, height: 1080, fps: 30 }); } catch (e) { busy = e.message; }
+  await client.stopOutput();
+  check('configure refuses while the output runs', /stop the output/.test(busy), busy);
+  await client.configure({ width: 1920, height: 1080, fps: 30 });
 
   await client.stop();
   check('shutdown command exits the engine', !client.running);

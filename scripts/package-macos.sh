@@ -131,16 +131,25 @@ Complete corresponding source code: https://github.com/skynatlabs/skynat-engine
 on a physical medium for three years from the date you received this program.
 EOF
 
+sign() {
+  local out
+  out="$(codesign --force --sign - "$1" 2>&1)" || { echo "$out" >&2; return 1; }
+}
 if [[ "${SKIP_SIGN:-0}" != "1" ]]; then
   # Inside-out ad-hoc signature: libraries, framework, plugins, program.
-  for f in "$OUT"/Frameworks/*.dylib; do codesign --force --sign - "$f" >/dev/null; done
-  codesign --force --sign - "$OUT/Frameworks/libobs.framework" >/dev/null
-  for p in "$OUT"/PlugIns/*.plugin; do codesign --force --sign - "$p" >/dev/null; done
-  codesign --force --sign - "$OUT/bin/skynat-engine" >/dev/null
+  for f in "$OUT"/Frameworks/*.dylib; do sign "$f"; done
+  sign "$OUT/Frameworks/libobs.framework"
+  for p in "$OUT"/PlugIns/*.plugin; do sign "$p"; done
+  sign "$OUT/bin/skynat-engine"
   codesign --verify --strict "$OUT/Frameworks/libobs.framework"
   for p in "$OUT"/PlugIns/*.plugin; do codesign --verify --strict "$p"; done
   codesign --verify --strict "$OUT/bin/skynat-engine"
 fi
 
 echo "== done: $(du -sh "$OUT" | cut -f1) in $OUT"
-"$OUT/bin/skynat-engine" --version
+# Run it once where this Mac can (an x86_64 build needs Rosetta on Apple Silicon).
+if [[ "$(uname -m)" == "$ARCH" ]] || { [[ "$ARCH" == "x86_64" ]] && arch -x86_64 /usr/bin/true 2>/dev/null; }; then
+  "$OUT/bin/skynat-engine" --version
+else
+  echo "   (not run: this Mac cannot execute $ARCH binaries)"
+fi
