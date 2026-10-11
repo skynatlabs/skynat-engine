@@ -226,6 +226,8 @@ int main(int argc, char **argv)
 	writer.start();
 	g_writer = &writer;
 
+	platform::begin_live_activity();
+
 	Engine engine(writer, opt);
 	writer.set_on_broken([&engine]() {
 		platform::post_main([&engine]() { engine.shutdown("stdout closed"); });

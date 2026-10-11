@@ -190,7 +190,7 @@ async function main() {
   if (CI) await client.stats(1000);
 
   // The adapter libobs rendered on (its log says "Loading up OpenGL|D3D11 on adapter …").
-  const adapterLine = log.find((l) => /Loading up (OpenGL|D3D11) on adapter/.test(l)) || '';
+  const adapterLine = (log.find((l) => /Loading up (OpenGL|D3D11) on adapter/.test(l)) || '').trim(); // Windows lines end in \r
   adapter = (adapterLine.match(/on adapter (.+?)(?: \(\d+\))?$/) || [])[1] || 'unknown';
   const cpuRenderer = /Software Renderer|Basic Render Driver/i.test(adapter);
   note('graphics adapter', adapter);

@@ -31,6 +31,11 @@ void quit_main_loop(); // safe from any thread
 void on_terminate(std::function<void()> fn);
 // Kills the process if a shutdown takes longer than `seconds`.
 void arm_exit_watchdog(int seconds);
+// The engine is a window-less child process: tells the OS it does live,
+// latency-critical work, so it is never napped and its timers are never
+// coalesced (macOS App Nap / timer coalescing), even while the app is in the
+// background. Windows: libobs already raises the timer resolution itself.
+void begin_live_activity();
 
 // ---- process information -------------------------------------------------
 void set_thread_name(const char *name); // shows in sample / Instruments / debuggers

@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include <cmath>
+#include <cstring>
 
 #include <media-io/video-io.h>
 
@@ -147,6 +148,21 @@ void arm_exit_watchdog(int seconds)
 	// SIGALRM's default action terminates the process.
 	signal(SIGALRM, SIG_DFL);
 	alarm((unsigned)seconds);
+}
+
+// Strong reference (ARC): the activity lasts as long as the process.
+static id<NSObject> g_live_activity = nil;
+
+void begin_live_activity()
+{
+	@autoreleasepool {
+		// No App Nap and no timer coalescing for this process (the graphics
+		// thread must wake up on time every frame); idle system sleep stays
+		// the app's decision.
+		g_live_activity = [[NSProcessInfo processInfo]
+			beginActivityWithOptions:(NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical)
+					  reason:@"skynat-engine: live video"];
+	}
 }
 
 // ---- process information -------------------------------------------------
@@ -364,8 +380,15 @@ std::vector<std::string> hardware_h264_encoders()
 			continue;
 		CFStringRef enc_id = (CFStringRef)CFDictionaryGetValue(dict, kVTVideoEncoderList_EncoderID);
 		char buf[256];
-		if (enc_id && CFStringGetCString(enc_id, buf, sizeof(buf), kCFStringEncodingUTF8))
-			ids.emplace_back(buf);
+		if (!enc_id || !CFStringGetCString(enc_id, buf, sizeof(buf), kCFStringEncodingUTF8))
+			continue;
+		// A macOS virtual machine lists the host's encoder as
+		// "paravirtualized:…". It reorders frames although asked not to (the
+		// program stream must have none) and undershoots CBR, so a VM uses
+		// the x264 fallback instead. Real Macs never list it.
+		if (strncmp(buf, "paravirtualized:", 16) == 0)
+			continue;
+		ids.emplace_back(buf);
 	}
 	CFRelease(list);
 	return ids;

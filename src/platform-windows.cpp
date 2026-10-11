@@ -156,6 +156,12 @@ void on_terminate(std::function<void()> fn)
 	SetConsoleCtrlHandler(console_handler, TRUE);
 }
 
+void begin_live_activity()
+{
+	// Nothing to do: libobs raises the timer resolution (timeBeginPeriod(1))
+	// when it loads, and Windows does not nap console processes.
+}
+
 void arm_exit_watchdog(int seconds)
 {
 	std::thread([seconds] {
