@@ -84,7 +84,9 @@ the engine's CPU use, render time and thread count.
 [`client/engine-client.ts`](client/engine-client.ts) is a dependency-free TypeScript client
 (Node's `child_process` + `Buffer` only): it starts the engine hidden, frames and parses messages,
 offers typed commands and events, restarts the engine with back-off if it crashes, and cleans up
-orphans.
+orphans. It contains no OBS code and only speaks the pipe protocol, so it is **MIT-licensed**
+(stated in the file) and can be copied into a closed-source app; everything else in this
+repository is GPL-2.0-or-later.
 
 ## Source
 

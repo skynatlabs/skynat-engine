@@ -7,7 +7,9 @@ OBS Studio source tree).
 
 "OBS" and "OBS Studio" are names of the OBS Project. This program is not made or endorsed by the
 OBS Project; it is built *with* OBS Studio's engine. Skynat is the author of the code in `src/`,
-`client/`, `tests/` and `scripts/`.
+`client/`, `tests/` and `scripts/`. `client/engine-client.ts` contains no OBS code (it only speaks
+the pipe protocol) and is licensed MIT, as stated in that file, so apps of any licence can use it;
+all other files are GPL-2.0-or-later.
 
 ## What is used from OBS Studio
 
