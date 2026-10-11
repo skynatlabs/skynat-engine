@@ -18,8 +18,9 @@
 //                     in software;
 //                   - if even that rasterizer lags (GitHub's macOS runners: 40-90 ms a
 //                     frame), the checks that need real time (frame rate, gaps, keyframe
-//                     spacing, bitrate, audio cadence, timing of cut and fade, feed rate)
-//                     are reported but not enforced, and the log says so in capitals;
+//                     spacing, bitrate, audio cadence, timing of cut and fade, feed rate,
+//                     the clip's own sound) are reported but not enforced, and the log
+//                     says so in capitals;
 //                   - if the renderer cannot start at all, the test says so plainly and
 //                     checks the pipe without video (--no-video) instead.
 //                   Every other check stays exactly as strict as on a real computer.
@@ -387,7 +388,8 @@ async function main() {
     console.log(`THIS RUNNER CANNOT RENDER IN REAL TIME: ${laggedSteady} frames lagged and ${skippedSteady} skipped`);
     console.log(`in the steady-state window (average ${st.render_ms.toFixed(1)} ms per frame on "${adapter}").`);
     console.log('The checks that need real time (frame rate, gaps, keyframe spacing, bitrate,');
-    console.log('audio cadence, timing of cut and fade, feed rate) are REPORTED, NOT ENFORCED here.');
+    console.log('audio cadence, timing of cut and fade, feed rate, the clip\'s own sound) are');
+    console.log('REPORTED, NOT ENFORCED here.');
     console.log('Every other check is enforced. Real time is proven on real hardware.');
     console.log('='.repeat(78) + '\n');
   }
@@ -513,8 +515,12 @@ async function main() {
   const t1k = toneLevel(seg(...onAir), 48000, 1000), t440 = toneLevel(seg(...onAir), 48000, 440);
   const t1kBlue = toneLevel(seg(...offAir), 48000, 1000), t440Blue = toneLevel(seg(...offAir), 48000, 440);
   check('PCM tone (1 kHz) present in Program audio', t1k > 0.05 && t1kBlue > 0.05, `amplitude ${t1k.toFixed(3)} / ${t1kBlue.toFixed(3)}`);
-  check('media audio (440 Hz) on Program while the clip is on air', t440 > 0.05, `amplitude ${t440.toFixed(3)} (${onAir.map((v) => v.toFixed(1)).join('–')} s)`);
-  check('media audio leaves Program with the clip (cut to blue)', t440Blue < t440 / 5, `amplitude ${t440Blue.toFixed(3)} (${offAir.map((v) => v.toFixed(1)).join('–')} s)`);
+  // A clip's sound is paced by the clock like its pictures: libobs drops what
+  // arrives too late, so on a runner that cannot keep real time it thins out
+  // (GitHub runners: 0.176 in real time, 0.087 lagging, nothing on the slowest).
+  rt('media audio (440 Hz) on Program while the clip is on air', t440 > 0.05, `amplitude ${t440.toFixed(3)} (${onAir.map((v) => v.toFixed(1)).join('–')} s)`);
+  rt('media audio leaves Program with the clip (cut to blue)', t440 > 0.05 && t440Blue < t440 / 5, `amplitude ${t440Blue.toFixed(3)} (${offAir.map((v) => v.toFixed(1)).join('–')} s)`);
+  check('no clip sound once the clip is off Program', t440Blue < 0.02, `amplitude ${t440Blue.toFixed(3)}`);
 
   // ---- monitor feeds ----------------------------------------------------------
   // 854x480 asked for; the engine never makes a feed larger than the canvas.
