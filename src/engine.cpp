@@ -435,6 +435,7 @@ void Engine::handle_command(const std::string &json)
 		{"set_preview", &Engine::cmd_set_preview, true},
 		{"overlay_visible", &Engine::cmd_overlay_visible, true},
 		{"media", &Engine::cmd_media, true},
+		{"lut", &Engine::cmd_lut, true},
 		{"start_output", &Engine::cmd_start_output, true},
 		{"stop_output", &Engine::cmd_stop_output, true},
 		{"set_bitrate", &Engine::cmd_set_bitrate, true},
@@ -1020,6 +1021,62 @@ std::string Engine::cmd_overlay_visible(obs_data_t *cmd)
 	bool visible = get_bool(cmd, "visible", true);
 	obs_sceneitem_set_visible(it->second.overlay_item, visible);
 	return JsonObj().integer("id", id).boolean("visible", visible).dump();
+}
+
+// lut {id | target: "program", path, amount}: libobs's own "Apply LUT" filter
+// (clut_filter: a .cube or PNG look-up table) on a source, or on Program under
+// the overlays. An empty path takes it off. The table is the app's: the
+// engine only applies the file it is given.
+std::string Engine::cmd_lut(obs_data_t *cmd)
+{
+	obs_source_t *target = nullptr;
+	std::string which;
+	if (get_str(cmd, "target") == "program") {
+		target = transition_;
+		which = "program";
+	} else {
+		const uint32_t id = require_id(cmd);
+		auto it = sources_.find(id);
+		if (it == sources_.end() || !it->second.source)
+			throw CommandError("no source with id " + std::to_string(id));
+		target = it->second.source;
+		which = std::to_string(id);
+	}
+	if (!target)
+		throw CommandError("nothing to apply a LUT to");
+	const std::string path = get_str(cmd, "path");
+	const double amount = std::clamp(get_double(cmd, "amount", 1.0), 0.0, 1.0);
+	static const char *kName = "skynat-lut";
+	obs_source_t *filter = obs_source_get_filter_by_name(target, kName);
+	if (path.empty()) {
+		if (filter) {
+			obs_source_filter_remove(target, filter);
+			obs_source_release(filter);
+		}
+		return JsonObj().str("target", which).boolean("on", false).dump();
+	}
+	if (!os_file_exists(path.c_str())) {
+		if (filter)
+			obs_source_release(filter);
+		throw CommandError("LUT file not found: " + path);
+	}
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "image_path", path.c_str());
+	obs_data_set_double(settings, "clut_amount", amount);
+	if (filter) {
+		obs_source_update(filter, settings);
+		obs_source_release(filter);
+	} else {
+		filter = obs_source_create_private("clut_filter", kName, settings);
+		if (!filter) {
+			obs_data_release(settings);
+			throw CommandError("libobs's LUT filter is not available");
+		}
+		obs_source_filter_add(target, filter);
+		obs_source_release(filter);
+	}
+	obs_data_release(settings);
+	return JsonObj().str("target", which).boolean("on", true).number("amount", amount).dump();
 }
 
 std::string Engine::cmd_media(obs_data_t *cmd)

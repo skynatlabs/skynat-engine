@@ -187,6 +187,7 @@ own unsigned 32-bit numbers.
 | `set_preview` | `id` or `null` | `{id}` — what the Preview feed shows (studio mode) |
 | `overlay_visible` | `id`, `visible` | `{id, visible}` |
 | `media` | `id`, `action`: `play` / `pause` / `restart` / `stop` | `{id, action}` |
+| `lut` | `id` (a source) or `target: "program"` (Program, under the overlays), `path` (a `.cube` or PNG look-up table; empty: take it off), `amount` (0–1, default 1) | `{target, on, amount}` — libobs's own "Apply LUT" filter (`clut_filter`); the table is the app's |
 | `start_output` | `video_kbps` (default 6000), `audio_kbps` (160), `keyint_sec` (2), `encoder`: `auto` (hardware, else x264) / `hardware` / `x264` / an encoder id, `encoder_settings`: `{<encoder id>: {<libobs setting>: value}}` — the documented settings of each encoder the app wants used, applied over the engine's generic defaults (constant bitrate; x264 `veryfast`, `zerolatency`) | `{encoder, settings, hardware, audio_encoder, video_kbps, audio_kbps, keyint_sec}` — `settings`: what the encoder was opened with. Whatever is asked, the engine keeps the pipe's constraints: the bitrate and keyframe interval asked for, no B-frames, x264 `scenecut=0` |
 | `stop_output` | — | `{was_running, video_packets, audio_packets}` after the encoders drained |
 | `set_bitrate` | `kbps` | `{kbps, encoder}` — applies live, no restart |

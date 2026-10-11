@@ -566,6 +566,30 @@ async function main() {
   const ipx = th4[th4.length - 1]?.px || [];
   check('image input renders (magenta PNG thumbnail)', th4.length >= 3 && ipx[0] > 200 && ipx[1] < 40 && ipx[2] > 200, `${th4.length} thumbnails, ${ipx.join(',')}`);
 
+  // ---- a look-up table on a source (libobs's Apply LUT; the table is the app's) ----
+  // A 2x2x2 .cube that sends every colour to red; then half of it; then off.
+  const lutFile = join(OUT_DIR, 'all-red.cube');
+  writeFileSync(lutFile, ['LUT_3D_SIZE 2', ...Array(8).fill('1 0 0')].join('\n') + '\n');
+  const lastPx = () => { const l = thumbs.get(2) || []; return l[l.length - 1]?.px || []; };
+  const untilPx = async (pred) => { for (let i = 0; i < 40; i++) { if (pred(lastPx())) return true; await sleep(100); } return false; };
+  await client.thumbnails({ on: true, width: 256, height: 144, fps: 10 });   // to see source 2 by itself
+  const lutOn = await client.lut(2, lutFile, 1);
+  const lutRed = await untilPx((p) => p[0] > 200 && p[2] < 40);
+  check('a LUT on a source: the blue colour comes out red', lutOn.on === true && lutRed, lastPx().join(','));
+  await client.lut(2, lutFile, 0.5);
+  const halfLut = await untilPx((p) => p[0] > 90 && p[0] < 230 && p[2] > 90 && p[2] < 230 && Math.abs(p[0] - p[2]) < 40);
+  check('…half of it: between the two', halfLut, lastPx().join(','));
+  await client.lut(2, '');
+  const lutOff = await untilPx((p) => p[2] > 200 && p[0] < 40);
+  check('…and taken off: blue again', lutOff, lastPx().join(','));
+  let lutMissing = '';
+  try { await client.lut(2, join(OUT_DIR, 'no-such.cube')); } catch (e) { lutMissing = e.message; }
+  check('a missing LUT file is an error', /not found/.test(lutMissing), lutMissing);
+  await client.thumbnails({ on: false });
+  const progLut = await client.lut('program', lutFile, 1);
+  await client.lut('program', '');
+  check('a LUT on Program (under the overlays) is accepted and taken off', progLut.on === true && progLut.target === 'program', JSON.stringify(progLut));
+
   // ---- stats ------------------------------------------------------------------
   const cpuPs = ((cpu2 - cpu1) / ((w2 - w1) / 1000)) * 100;
   note(`engine CPU (ps, ${W}x${H}p30 media + overlay + PCM + 6 Mbps program + 2 feeds + thumbnails)`, `${cpuPs.toFixed(1)} % of one core; engine's own figure ${st.cpu_percent.toFixed(1)} %`);

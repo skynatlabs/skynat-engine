@@ -582,6 +582,8 @@ export class EngineClient {
   setPreview(id: number | null) { return this.command('set_preview', { id }); }
   overlayVisible(id: number, visible: boolean) { return this.command('overlay_visible', { id, visible }); }
   media(id: number, action: 'play' | 'pause' | 'restart' | 'stop') { return this.command('media', { id, action }); }
+  /** libobs's Apply LUT filter on a source, or on Program (`'program'`); an empty path takes it off. */
+  lut(target: number | 'program', path: string, amount = 1) { return this.command('lut', target === 'program' ? { target, path, amount } : { id: target, path, amount }); }
   startOutput(a: { video_kbps?: number; audio_kbps?: number; keyint_sec?: number; encoder?: 'auto' | 'hardware' | 'x264' | string; encoder_settings?: Record<string, Record<string, unknown>> } = {}) {
     return this.command<{ encoder: string; settings: Record<string, unknown>; hardware: boolean; audio_encoder: string; video_kbps: number }>('start_output', a);
   }

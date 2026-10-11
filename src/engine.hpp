@@ -82,6 +82,7 @@ private:
 	std::string cmd_set_preview(obs_data_t *cmd);
 	std::string cmd_overlay_visible(obs_data_t *cmd);
 	std::string cmd_media(obs_data_t *cmd);
+	std::string cmd_lut(obs_data_t *cmd);
 	std::string cmd_start_output(obs_data_t *cmd);
 	std::string cmd_stop_output(obs_data_t *cmd);
 	std::string cmd_set_bitrate(obs_data_t *cmd);
