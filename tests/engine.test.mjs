@@ -344,8 +344,14 @@ async function main() {
     check('output started on the software x264 fallback (CI runner without a hardware encoder)', out.encoder === 'obs_x264',
       `${out.encoder} + ${out.audio_encoder}`);
   }
-  const tOut = Date.now();
-  const at = (s) => sleep(Math.max(0, tOut + s * 1000 - Date.now()));
+  // The schedule follows the recording: each step waits until the program
+  // holds that many seconds of picture (30 packets a second). In real time that
+  // is the wall clock; on a runner that cannot keep real time (GitHub's Intel
+  // Macs made 6 s of picture in 16 s) every step still gets its seconds.
+  const at = async (s) => {
+    const until = Date.now() + 30000;
+    while (video.length < Math.round(s * 30) && Date.now() < until) await sleep(10);
+  };
 
   await client.previewFeed({ on: true, width: 854, height: 480, fps: 15, kbps: 800 });
   await client.thumbnails({ on: true, width: 256, height: 144, fps: 4 });
@@ -584,13 +590,15 @@ async function main() {
   const feedCfgs = [];
   const onFeedCfg = (c) => feedCfgs.push(c);
   client.on('feedConfig', onFeedCfg);
+  const firstW = Math.min(640, W) & ~1;
+  const feedSeen = async (w) => { for (let i = 0; i < 250 && !feedCfgs.some((c) => c.width === w); i++) await sleep(20); };
   await client.previewFeed({ on: true, program: true, preview: false, width: 640, height: 360, fps: 10 });
-  await sleep(700);
+  await feedSeen(firstW);
   await client.previewFeed({ on: true, program: true, preview: false, width: 426, height: 240, fps: 10 });
-  await sleep(700);
+  await feedSeen(426);
   await client.previewFeed({ on: false });
   client.off('feedConfig', onFeedCfg);
-  check('monitor feed restarts with new parameters', feedCfgs.length >= 2 && feedCfgs[0].width === (Math.min(640, W) & ~1) && feedCfgs.at(-1).width === 426 && feedCfgs.at(-1).height === 240 && feedCfgs.at(-1).fpsNum / feedCfgs.at(-1).fpsDen === 10,
+  check('monitor feed restarts with new parameters', feedCfgs.length >= 2 && feedCfgs[0].width === firstW && feedCfgs.at(-1).width === 426 && feedCfgs.at(-1).height === 240 && feedCfgs.at(-1).fpsNum / feedCfgs.at(-1).fpsDen === 10,
     feedCfgs.map((c) => `${c.width}x${c.height}@${c.fpsNum / c.fpsDen}`).join(' -> '));
 
   let missing = '';
@@ -618,13 +626,16 @@ async function main() {
   await client.addSource({ id: 7, type: 'color', color: '#00ff00' });
   await client.setProgram(7);
   const x264 = await client.startOutput({ video_kbps: 3000, encoder: 'x264' });
-  await sleep(1500);
+  // 1.5 s (about 90 packets in real time); a runner that cannot keep real time
+  // gets up to 10 s to show that the encoder runs.
+  const encodeUntil = Date.now() + (excusedRealtime ? 10000 : 1500);
+  while (Date.now() < encodeUntil && !(excusedRealtime && n720 > 30)) await sleep(20);
   await client.stopOutput();
   check('software x264 only when asked for', x264.encoder === 'obs_x264' && x264.hardware === false && n720 > 30, `${x264.encoder}, ${n720} packets`);
   client.off('videoConfig', onCfg); client.off('videoPacket', onPkt);
   const st720 = await client.stats();
   check(`configure: ${alt.w}x${alt.h} at 60 fps`, cfg.width === alt.w && cfg.fps_num === 60 && cfg720 && cfg720.width === alt.w && cfg720.height === alt.h && cfg720.fpsNum === 60 && st720.fps === 60,
-    `${cfg720 ? `${cfg720.width}x${cfg720.height} ${cfg720.fpsNum}/${cfg720.fpsDen}` : 'no config'}, ${n720} packets in 1.5 s`);
+    `${cfg720 ? `${cfg720.width}x${cfg720.height} ${cfg720.fpsNum}/${cfg720.fpsDen}` : 'no config'}, ${n720} packets`);
   let busy = '';
   await client.startOutput({ video_kbps: 3000 });
   try { await client.configure({ width: W, height: H, fps: 30 }); } catch (e) { busy = e.message; }
