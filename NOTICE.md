@@ -59,8 +59,16 @@ uthash, libvpx, opus, lame, ogg/vorbis/theora, aom, libpng (see each licence). T
 are copied into `licenses/` of every package by `scripts/package-macos.sh` /
 `scripts/build-windows.ps1`.
 
+The Windows package also carries the Microsoft Visual C++ runtime DLLs (`vcruntime140*.dll`,
+`msvcp140*.dll`, `concrt140.dll`, …) next to the program — Microsoft's "app-local" deployment of
+its redistributable runtime, copied from the redistributable folder of the Visual Studio that
+built the engine — so the engine runs on a PC without the VC++ redistributable installed.
+
 ## Modifications log
 
 - 2026-10-11 — first version (engine 0.1.0) against OBS 31.0.4. OBS unmodified; no patches.
   Packaging strips local symbols (`strip -x`) and re-signs the copied binaries (ad hoc); it does
   not change install names or rpaths.
+- 2026-10-11 — published as https://github.com/skynatlabs/skynat-engine; the release builds
+  (Apple Silicon, Intel Mac, Windows x64) are made and tested by GitHub Actions
+  (`.github/workflows/build.yml`) from the tagged source. OBS still unmodified; no patches.

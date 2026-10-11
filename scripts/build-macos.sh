@@ -21,6 +21,7 @@
 #   SKYNAT_HEAVY_LOCK   optional lock directory: configure/build steps wait for it
 #                       (mkdir lock, stale after 90 minutes) so heavy jobs never overlap
 #   CLEAN=1             delete this architecture's build trees first
+#   OBS_ONLY=1          stop after building OBS (CI caches that tree between runs)
 set -euo pipefail
 
 ARCH="${1:-}"
@@ -105,6 +106,10 @@ cd "$ROOT"
 # ---- 3. build libobs + renderer + plugins -------------------------------------
 log "building ${OBS_TARGETS[*]}"
 nice -n 15 cmake --build "$OBS_BUILD" --config "$CONFIG" --parallel "$JOBS" --target "${OBS_TARGETS[@]}" -- -quiet
+if [[ "${OBS_ONLY:-0}" == "1" ]]; then
+  log "OBS built (OBS_ONLY=1): stopping before the engine"
+  exit 0
+fi
 
 # ---- 4. build the engine -------------------------------------------------------
 log "building skynat-engine"

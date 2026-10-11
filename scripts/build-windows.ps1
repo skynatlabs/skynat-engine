@@ -11,6 +11,7 @@
   4. Builds skynat-engine against that libobs.
   5. Packages dist/win32-x64/:
        skynat-engine.exe, obs.dll, libobs-d3d11.dll, w32-pthreads.dll, the obs-deps DLLs,
+       the Microsoft Visual C++ runtime DLLs (app-local, so no runtime installer is needed),
        the encoder test helpers (obs-nvenc-test.exe, obs-qsv-test.exe, obs-amf-test.exe — the
        plugins look for them next to the executable),
        obs-plugins/64bit/<module>.dll, data/libobs/, data/obs-plugins/<module>/,
@@ -23,8 +24,11 @@
 .PARAMETER Work       Work folder for the OBS checkout and build trees
                       (default: $env:SKYNAT_ENGINE_WORK, else ../skynat-engine-work).
 .PARAMETER Config     Build configuration (default Release).
-.PARAMETER Jobs       Parallel build jobs (default 4).
-.PARAMETER Smoke      Also start the packaged engine once and wait for its "ready" event.
+.PARAMETER Jobs       Parallel build jobs (default: the number of processors).
+.PARAMETER Smoke      Also start the packaged engine once, read its first message ("ready",
+                      or the start-up error on a computer whose graphics cannot start) and
+                      check that it exits when its stdin closes.
+.PARAMETER ObsOnly    Stop after building OBS (CI caches that tree between runs).
 #>
 [CmdletBinding()]
 param(
@@ -32,8 +36,9 @@ param(
   [string]$Work = '',
   [ValidateSet('Release', 'RelWithDebInfo')]
   [string]$Config = 'Release',
-  [int]$Jobs = 4,
-  [switch]$Smoke
+  [int]$Jobs = [Environment]::ProcessorCount,
+  [switch]$Smoke,
+  [switch]$ObsOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -106,6 +111,10 @@ try {
 # ---- 3. build libobs + renderer + plugins ------------------------------------------
 Step "building $($ObsTargets -join ', ')"
 Invoke-Native cmake (@('--build', $ObsBuild, '--config', $Config, '--parallel', "$Jobs", '--target') + $ObsTargets)
+if ($ObsOnly) {
+  Step 'OBS built (-ObsOnly): stopping before the engine'
+  return
+}
 
 # ---- 4. build the engine ------------------------------------------------------------
 Step 'building skynat-engine'
@@ -120,7 +129,9 @@ Invoke-Native cmake @('--build', $EngineBuild, '--config', $Config, '--parallel'
 Step "packaging into $Out"
 $Rundir = Join-Path $ObsBuild "rundir/$Config"
 $Bin = Join-Path $Rundir 'bin/64bit'
-$Deps = Get-ChildItem -Path (Join-Path $ObsSrc '.deps') -Directory -Filter 'obs-deps-*-x64' | Select-Object -First 1
+# The prebuilt obs-deps folder (obs-deps-<date>-x64), not the Qt one (obs-deps-qt6-<date>-x64).
+$Deps = Get-ChildItem -Path (Join-Path $ObsSrc '.deps') -Directory |
+  Where-Object { $_.Name -match '^obs-deps-\d{4}-\d{2}-\d{2}-x64$' } | Select-Object -First 1
 if (-not $Deps) { throw "obs-deps for x64 not found under $ObsSrc/.deps" }
 
 if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
@@ -139,6 +150,20 @@ foreach ($f in $Helpers) {
 }
 # Third-party DLLs (FFmpeg, x264, mbedTLS, SRT, RIST, zlib, ...) — as OBS ships them.
 Get-ChildItem -Path (Join-Path $Deps.FullName 'bin') -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName $Out }
+
+# The Visual C++ runtime, deployed app-locally (Microsoft's "local deployment"): a PC without
+# the VC++ 2015-2022 redistributable installed must still run the engine. Taken from the
+# redistributable folder of the Visual Studio that built it, so the versions match.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+$vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (-not $vsPath) { throw 'Visual Studio with the C++ tools not found (vswhere)' }
+$crt = Get-ChildItem -Path (Join-Path $vsPath 'VC/Redist/MSVC') -Directory |
+  Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } | Sort-Object { [version]$_.Name } -Descending |
+  ForEach-Object { Get-ChildItem -Path (Join-Path $_.FullName 'x64') -Directory -Filter 'Microsoft.VC*.CRT' -ErrorAction SilentlyContinue } |
+  Select-Object -First 1
+if (-not $crt) { throw "the Visual C++ runtime (x64 Microsoft.VC*.CRT) was not found under $vsPath/VC/Redist/MSVC" }
+Write-Host "Visual C++ runtime from $($crt.FullName)"
+Get-ChildItem -Path $crt.FullName -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName $Out }
 
 foreach ($p in $Plugins) {
   $src = Join-Path $Rundir "obs-plugins/64bit/$p.dll"
@@ -176,35 +201,56 @@ if ($LASTEXITCODE -ne 0) { throw 'the packaged engine does not run' }
 $size = '{0:N1} MB' -f ((Get-ChildItem -Recurse -File $Out | Measure-Object -Sum Length).Sum / 1MB)
 Step "done: $version, $size in $Out"
 
-# ---- optional smoke test: start it, wait for "ready", close stdin --------------------------
+# ---- optional smoke test: start it, read its first message, close stdin ---------------------
 if ($Smoke) {
-  Step 'smoke test'
-  $psi = [System.Diagnostics.ProcessStartInfo]::new((Join-Path $Out 'skynat-engine.exe'), '--log-level warning')
+  Step 'smoke test: start, read the first message, close stdin'
+  $psi = [System.Diagnostics.ProcessStartInfo]::new((Join-Path $Out 'skynat-engine.exe'))
+  $psi.ArgumentList.Add('--log-level')
+  $psi.ArgumentList.Add('warning')
   $psi.RedirectStandardInput = $true
   $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
+  # Not redirected: the engine's log goes straight to this console (a redirected stderr that
+  # nobody reads could fill up and block the engine).
+  $psi.RedirectStandardError = $false
   $psi.UseShellExecute = $false
   $psi.CreateNoWindow = $true
   $proc = [System.Diagnostics.Process]::Start($psi)
   $stdout = $proc.StandardOutput.BaseStream
-  $header = [byte[]]::new(5)
-  $read = 0
-  $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  while ($read -lt 5 -and [DateTime]::UtcNow -lt $deadline) {
-    $n = $stdout.Read($header, $read, 5 - $read)
-    if ($n -le 0) { break }
-    $read += $n
+
+  # Reads exactly $count bytes or throws when $timeoutMs passes (a plain Read() would block forever).
+  function Read-Exactly([System.IO.Stream]$Stream, [int]$Count, [int]$TimeoutMs) {
+    $buf = [byte[]]::new($Count)
+    $got = 0
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    while ($got -lt $Count) {
+      $left = [int][Math]::Max(0, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+      $task = $Stream.ReadAsync($buf, $got, $Count - $got)
+      if ($left -le 0 -or -not $task.Wait($left)) { throw "timed out waiting for the engine ($got of $Count bytes)" }
+      if ($task.Result -le 0) { throw "the engine closed its output after $got of $Count bytes" }
+      $got += $task.Result
+    }
+    return , $buf
   }
-  if ($read -lt 5) { throw "no message from the engine: $($proc.StandardError.ReadToEnd())" }
-  $length = [BitConverter]::ToUInt32($header, 0)
-  $body = [byte[]]::new($length)
-  $got = 0
-  while ($got -lt $length) { $n = $stdout.Read($body, $got, $length - $got); if ($n -le 0) { break }; $got += $n }
-  $json = [System.Text.Encoding]::UTF8.GetString($body, 0, $got)
+
+  try {
+    $header = Read-Exactly $stdout 5 60000
+    $length = [BitConverter]::ToUInt32($header, 0)
+    if ($length -gt 1MB) { throw "first message claims $length bytes" }
+    $body = Read-Exactly $stdout ([int]$length) 10000
+  } catch {
+    if (-not $proc.HasExited) { $proc.Kill() }
+    throw "smoke test: no first message from the engine ($($_.Exception.Message)); exit code $(if ($proc.HasExited) { $proc.ExitCode } else { 'n/a' })"
+  }
+  $json = [System.Text.Encoding]::UTF8.GetString($body)
   Write-Host $json
-  $proc.StandardInput.Close()   # the engine exits when its stdin closes
+  try { $proc.StandardInput.Close() } catch { }   # the engine exits when its stdin closes
   if (-not $proc.WaitForExit(10000)) { $proc.Kill(); throw 'engine did not exit after stdin closed' }
   if ($header[4] -ne 2 -or $json -notmatch '"event":"(ready|error)"') { throw 'unexpected first message' }
-  if ($json -match '"event":"error"') { Write-Warning 'engine reported an error at start-up (no GPU on this runner?)' }
-  Write-Host "exit code $($proc.ExitCode)"
+  if ($json -match '"event":"error"') {
+    Write-Warning "the engine could not start its renderer here (no usable GPU on this computer?) — exit code $($proc.ExitCode)"
+    if ($proc.ExitCode -ne 3) { throw "a start-up error must end with exit code 3, got $($proc.ExitCode)" }
+  } elseif ($proc.ExitCode -ne 0) {
+    throw "the engine exited with code $($proc.ExitCode) after its stdin closed (expected 0)"
+  }
+  Write-Host "smoke test ok: first message $(if ($json -match '"event":"ready"') { 'ready' } else { 'start-up error' }), exit code $($proc.ExitCode)"
 }

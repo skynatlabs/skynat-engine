@@ -40,8 +40,9 @@ dist/darwin-arm64/                 dist/win32-x64/
 
 Copy the folder anywhere (for the app: `Contents/Resources/engine/`) and run
 `bin/skynat-engine` (macOS) or `skynat-engine.exe` (Windows). Options: `--width`, `--height`,
-`--fps`, `--plugins`, `--data`, `--config`, `--renderer`, `--log-level`, `--version`. It exits
-when its standard input closes, on the `shutdown` command, or on SIGTERM.
+`--fps`, `--plugins`, `--data`, `--config`, `--renderer`, `--log-level`, `--no-video`
+(diagnostics: the pipe without a renderer), `--version`. It exits when its standard input closes,
+on the `shutdown` command, or on SIGTERM.
 
 ## Building
 
@@ -68,16 +69,40 @@ Same steps with OBS's `windows-x64` preset; written for GitHub Actions `windows-
 
 ## Tests
 
+Node.js 22.18 or newer (it runs the TypeScript client directly) and ffmpeg (on `PATH`, or
+`FFMPEG=/path/to/ffmpeg`):
+
 ```sh
 node tests/framing.test.mjs          # protocol framing (no engine needed)
-node tests/engine.test.mjs           # starts dist/darwin-<arch>/bin/skynat-engine and checks everything
+node tests/engine.test.mjs           # starts dist/<platform>/… and checks everything
 ```
 
 `tests/engine.test.mjs` makes a 10-second 1080p30 test clip with ffmpeg, plays it in a loop with an
 overlay and a PCM tone, records the program packets for ~10 s into an FLV file and probes it, then
 checks keyframes, timestamps, frame rate, audio continuity, cut/fade switching, the monitor feeds,
-thumbnails, a live bitrate change, and that the engine exits when its stdin closes. It also prints
-the engine's CPU use, render time and thread count.
+thumbnails, a live bitrate change, a crash restart, that the engine exits when its stdin closes,
+and the pipe without a renderer (`--no-video`). It also prints the engine's CPU use, render time
+and thread count. On a real computer it requires the hardware H.264 encoder.
+
+## Continuous integration and releases
+
+Every push to `main` builds and tests the engine on GitHub Actions
+([`.github/workflows/build.yml`](.github/workflows/build.yml)):
+
+| Job | Runner | Build | Tests |
+|---|---|---|---|
+| Apple Silicon | `macos-15` (arm64) | `scripts/build-macos.sh arm64 11.0` | framing + end to end |
+| Intel Mac | `macos-15-intel` (x86_64) | `scripts/build-macos.sh x86_64 11.0` | framing + end to end, natively on Intel |
+| Windows x64 | `windows-2022` | `scripts/build-windows.ps1 -Smoke` | framing + end to end |
+
+The runners are virtual machines without a hardware video encoder, so there — and only there
+(`SKYNAT_ENGINE_TEST_SOFTWARE=1` is honoured only when `CI=true`) — the end-to-end test accepts
+the program on the software x264 fallback; every other check is exactly as strict as on a real
+computer. A runner whose graphics cannot start at all would be reported in plain words and
+checked without video. Pushing a tag `v*` attaches the three tested packages to that tag's
+release: `skynat-engine-darwin-arm64.zip`, `skynat-engine-darwin-x86_64.zip` (macOS 11.0 or
+newer; the frameworks' symlinks are kept — unpack with Finder, `ditto -x -k` or `unzip`) and
+`skynat-engine-win32-x64.zip` (64-bit Windows 10/11 with DirectX 11).
 
 ## App side
 

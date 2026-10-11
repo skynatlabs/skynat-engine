@@ -1,0 +1,296 @@
+# Builds skynat-engine from OBS Studio's libobs for Apple Silicon, Intel Macs and
+# Windows x64, runs the tests on each, and — for a tag v* — attaches the three
+# tested packages to that tag's GitHub release.
+#
+# The runners are virtual machines without a hardware video encoder. The
+# end-to-end test therefore runs with SKYNAT_ENGINE_TEST_SOFTWARE=1, which
+# (only when CI=true) accepts the software x264 fallback for the program;
+# every other check is as strict as on a real computer (tests/engine.test.mjs).
+#
+# Between ordinary runs the OBS build tree is cached (it does not change while
+# OBS_TAG and the build scripts stay the same). Release tags never use the
+# cache: they build everything from scratch.
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  OBS_TAG: '31.0.4'
+  FFMPEG_STATIC: 'ffmpeg-static@5.3.0'
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          # The only place the Intel engine can be tested: an Intel runner, natively.
+          - arch: x86_64
+            runner: macos-15-intel
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Runner
+        run: |
+          sw_vers
+          echo "machine: $(uname -m), $(sysctl -n hw.ncpu) CPUs, $(( $(sysctl -n hw.memsize) / 1073741824 )) GB"
+          xcodebuild -version
+          cmake --version | head -1
+          system_profiler SPDisplaysDataType 2>/dev/null | sed -n '1,25p' || true
+
+      - name: Restore the OBS build (not for release tags)
+        id: obs-cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/work/obs-studio
+          key: obs-${{ env.OBS_TAG }}-macos-${{ matrix.arch }}-${{ hashFiles('scripts/build-macos.sh') }}
+          restore-keys: obs-${{ env.OBS_TAG }}-macos-${{ matrix.arch }}-
+
+      - name: Build OBS Studio ${{ env.OBS_TAG }} (libobs, OpenGL renderer, plugins)
+        env:
+          SKYNAT_ENGINE_WORK: ${{ runner.temp }}/work
+          OBS_ONLY: '1'
+        run: JOBS=$(sysctl -n hw.ncpu) scripts/build-macos.sh "$ARCH" 11.0
+
+      - name: Save the OBS build
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.obs-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/work/obs-studio
+          key: obs-${{ env.OBS_TAG }}-macos-${{ matrix.arch }}-${{ hashFiles('scripts/build-macos.sh') }}
+
+      - name: Build and package the engine (macOS 11.0 or newer)
+        env:
+          SKYNAT_ENGINE_WORK: ${{ runner.temp }}/work
+        run: JOBS=$(sysctl -n hw.ncpu) scripts/build-macos.sh "$ARCH" 11.0
+
+      - name: ffmpeg for the tests
+        run: |
+          npm install --no-save --no-package-lock --no-fund --no-audit --prefix "$RUNNER_TEMP/ffmpeg" "$FFMPEG_STATIC"
+          echo "FFMPEG=$RUNNER_TEMP/ffmpeg/node_modules/ffmpeg-static/ffmpeg" >> "$GITHUB_ENV"
+
+      - name: Framing test
+        run: node tests/framing.test.mjs
+
+      - name: End-to-end test
+        env:
+          SKYNAT_ENGINE_TEST_SOFTWARE: '1'
+        run: node tests/engine.test.mjs
+
+      - name: Keep the test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-darwin-${{ matrix.arch }}
+          path: |
+            tests/results/last-run.json
+            tests/results/engine.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Zip the package (symlinks kept) and check the zip
+        run: |
+          set -euo pipefail
+          ZIP="skynat-engine-darwin-$ARCH.zip"
+          (cd dist && ditto -c -k --norsrc --noextattr --noacl --keepParent "darwin-$ARCH" "../$ZIP")
+          ls -l "$ZIP"
+          X="$RUNNER_TEMP/zip-check"
+          rm -rf "$X" && mkdir -p "$X"
+          unzip -q "$ZIP" -d "$X"
+          E="$X/darwin-$ARCH"
+          test -L "$E/Frameworks/libobs.framework/Versions/Current" || { echo "the zip lost the framework symlinks"; exit 1; }
+          echo "symlinks: $(find "$E" -type l | wc -l | tr -d ' '), files: $(find "$E" -type f | wc -l | tr -d ' ')"
+          test "$(lipo -archs "$E/bin/skynat-engine")" = "$ARCH"
+          codesign --verify --strict "$E/Frameworks/libobs.framework"
+          codesign --verify --strict "$E/bin/skynat-engine"
+          for f in COPYING NOTICE.md SOURCE.txt; do test -f "$E/$f"; done
+          "$E/bin/skynat-engine" --version
+
+      - name: Keep the package
+        uses: actions/upload-artifact@v7
+        with:
+          name: skynat-engine-darwin-${{ matrix.arch }}
+          path: skynat-engine-darwin-${{ matrix.arch }}.zip
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Runner
+        run: |
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version | Format-List
+          "CPUs: $([Environment]::ProcessorCount)"
+          Get-CimInstance Win32_VideoController | Select-Object Name, AdapterCompatibility, DriverVersion | Format-Table -AutoSize
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property displayName
+          cmake --version | Select-Object -First 1
+
+      - name: Restore the OBS build (not for release tags)
+        id: obs-cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/work/obs-studio
+          key: obs-${{ env.OBS_TAG }}-windows-x64-${{ hashFiles('scripts/build-windows.ps1') }}
+          restore-keys: obs-${{ env.OBS_TAG }}-windows-x64-
+
+      - name: Build OBS Studio ${{ env.OBS_TAG }} (libobs, Direct3D 11 renderer, plugins)
+        env:
+          SKYNAT_ENGINE_WORK: ${{ runner.temp }}/work
+        run: ./scripts/build-windows.ps1 -ObsTag $env:OBS_TAG -ObsOnly
+
+      - name: Save the OBS build
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.obs-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/work/obs-studio
+          key: obs-${{ env.OBS_TAG }}-windows-x64-${{ hashFiles('scripts/build-windows.ps1') }}
+
+      - name: Build and package the engine, start check
+        env:
+          SKYNAT_ENGINE_WORK: ${{ runner.temp }}/work
+        run: ./scripts/build-windows.ps1 -ObsTag $env:OBS_TAG -Smoke
+
+      - name: ffmpeg for the tests
+        run: |
+          npm install --no-save --no-package-lock --no-fund --no-audit --prefix "$env:RUNNER_TEMP\ffmpeg" $env:FFMPEG_STATIC
+          if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+          "FFMPEG=$env:RUNNER_TEMP\ffmpeg\node_modules\ffmpeg-static\ffmpeg.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Framing test
+        run: node tests/framing.test.mjs
+
+      - name: End-to-end test
+        env:
+          SKYNAT_ENGINE_TEST_SOFTWARE: '1'
+        run: node tests/engine.test.mjs
+
+      - name: Keep the test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-win32-x64
+          path: |
+            tests/results/last-run.json
+            tests/results/engine.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Zip the package and check the zip
+        run: |
+          $zip = 'skynat-engine-win32-x64.zip'
+          Compress-Archive -Path dist/win32-x64 -DestinationPath $zip -CompressionLevel Optimal -Force
+          Get-Item $zip | Select-Object Name, Length | Format-Table -AutoSize
+          $x = Join-Path $env:RUNNER_TEMP 'zip-check'
+          if (Test-Path $x) { Remove-Item -Recurse -Force $x }
+          Expand-Archive -Path $zip -DestinationPath $x
+          $e = Join-Path $x 'win32-x64'
+          foreach ($f in @('skynat-engine.exe', 'obs.dll', 'libobs-d3d11.dll', 'COPYING', 'NOTICE.md', 'SOURCE.txt', 'obs-plugins/64bit/obs-ffmpeg.dll', 'data/libobs/default.effect')) {
+            if (-not (Test-Path (Join-Path $e $f))) { throw "the zip is missing $f" }
+          }
+          "files: $((Get-ChildItem -Recurse -File $e).Count)"
+          & (Join-Path $e 'skynat-engine.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'the unzipped engine does not run' }
+
+      - name: Keep the package
+        uses: actions/upload-artifact@v7
+        with:
+          name: skynat-engine-win32-x64
+          path: skynat-engine-win32-x64.zip
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+
+  release:
+    name: Release ${{ github.ref_name }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: skynat-engine-*
+          merge-multiple: true
+          path: release
+
+      - name: Test results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: test-results-*
+          path: results
+
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          ls -l release
+          for z in skynat-engine-darwin-arm64.zip skynat-engine-darwin-x86_64.zip skynat-engine-win32-x64.zip; do
+            test -f "release/$z" || { echo "missing release/$z"; exit 1; }
+          done
+          {
+            echo "skynat-engine ${GITHUB_REF_NAME#v}: the silent, headless video engine Skynat Live starts as a separate program and talks to over pipes, built from OBS Studio ${OBS_TAG}'s libobs (unmodified)."
+            echo
+            echo "Licence: GPL-2.0-or-later. Every package carries COPYING, NOTICE.md, SOURCE.txt and the third-party licences. Complete source: this tag."
+            echo
+            echo "| Package | For | SHA-256 |"
+            echo "|---|---|---|"
+            echo "| skynat-engine-darwin-arm64.zip | Apple Silicon Macs, macOS 11.0 or newer | \`$(sha256sum release/skynat-engine-darwin-arm64.zip | cut -d' ' -f1)\` |"
+            echo "| skynat-engine-darwin-x86_64.zip | Intel Macs, macOS 11.0 or newer | \`$(sha256sum release/skynat-engine-darwin-x86_64.zip | cut -d' ' -f1)\` |"
+            echo "| skynat-engine-win32-x64.zip | 64-bit Windows 10/11, DirectX 11 | \`$(sha256sum release/skynat-engine-win32-x64.zip | cut -d' ' -f1)\` |"
+            echo
+            echo "The Mac zips keep the frameworks' symlinks: unpack them with Finder, \`ditto -x -k\` or \`unzip\`."
+            echo
+            echo "Built and tested by GitHub Actions from this tag (tests/framing.test.mjs and tests/engine.test.mjs on each platform):"
+            echo
+            for f in results/*/last-run.json; do
+              jq -r '"- \(.platform): \(.passed) checks passed, \(.failed) failed — " + (if .mode == "full" then "full run on a hardware encoder" elif .mode == "software-encoder" then "full run; the runner (a virtual machine) has no hardware video encoder, so the program used the software x264 fallback" else "this runner has no GPU: the pipe was checked without video" end)' "$f"
+            done
+          } > notes.md
+          cat notes.md
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            release/skynat-engine-darwin-arm64.zip
+            release/skynat-engine-darwin-x86_64.zip
+            release/skynat-engine-win32-x64.zip
+          body_path: notes.md
+          fail_on_unmatched_files: true
