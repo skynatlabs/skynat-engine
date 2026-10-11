@@ -1035,6 +1035,9 @@ obs_encoder_t *Engine::create_video_encoder(const std::string &name, const std::
 			obs_data_set_string(s, "preset", "veryfast");
 			obs_data_set_string(s, "tune", "zerolatency");
 			obs_data_set_int(s, "bf", 0);
+			// Keyframes exactly every keyint_sec, as the protocol promises
+			// (x264 would add one at every scene change, e.g. a clip looping).
+			obs_data_set_string(s, "x264opts", "scenecut=0");
 		} else if (id.rfind("com.apple.videotoolbox", 0) == 0) {
 			obs_data_set_bool(s, "bframes", false); // the FLV path assumes no reordering
 			// Intel Macs have no true CBR in VideoToolbox: average bitrate

@@ -95,13 +95,18 @@ Every push to `main` builds and tests the engine on GitHub Actions
 | Intel Mac | `macos-15-intel` (x86_64) | `scripts/build-macos.sh x86_64 11.0` | framing + end to end, natively on Intel |
 | Windows x64 | `windows-2022` | `scripts/build-windows.ps1 -Smoke` | framing + end to end |
 
-The runners are virtual machines without a hardware video encoder, so there — and only there
-(`SKYNAT_ENGINE_TEST_SOFTWARE=1` is honoured only when `CI=true`) — the end-to-end test accepts
-the program on the software x264 fallback; every other check is exactly as strict as on a real
-computer. A runner whose graphics cannot start at all would be reported in plain words and
-checked without video. Pushing a tag `v*` attaches the three tested packages to that tag's
-release: `skynat-engine-darwin-arm64.zip`, `skynat-engine-darwin-x86_64.zip` (macOS 11.0 or
-newer; the frameworks' symlinks are kept — unpack with Finder, `ditto -x -k` or `unzip`) and
+The runners are virtual machines without a GPU or a hardware video encoder. There — and only
+there (`SKYNAT_ENGINE_TEST_SOFTWARE=1` is honoured only when `CI=true`) — the end-to-end test
+accepts the program on the software x264 fallback; because libobs renders on a software
+rasterizer (Apple Software Renderer, Microsoft Basic Render Driver) it runs on a 480x270 canvas
+at 30 fps with the clip decoded in software; and if the rasterizer still cannot keep real time
+(GitHub's macOS runners take 40–90 ms a frame even then), the checks that need real time are
+reported, not enforced, and the log says so in capitals. Every other check is exactly as strict
+as on a real computer, where 1080p30, real time and hardware H.264 are all required. A runner
+whose graphics cannot start at all would be reported in plain words and checked without video.
+Pushing a tag `v*` attaches the three tested packages to that tag's release, with what each
+runner proved: `skynat-engine-darwin-arm64.zip`, `skynat-engine-darwin-x86_64.zip` (macOS 11.0
+or newer; the frameworks' symlinks are kept — unpack with Finder, `ditto -x -k` or `unzip`) and
 `skynat-engine-win32-x64.zip` (64-bit Windows 10/11 with DirectX 11).
 
 ## App side
