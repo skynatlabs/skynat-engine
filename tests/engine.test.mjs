@@ -344,14 +344,8 @@ async function main() {
     check('output started on the software x264 fallback (CI runner without a hardware encoder)', out.encoder === 'obs_x264',
       `${out.encoder} + ${out.audio_encoder}`);
   }
-  // The schedule follows the recording: each step waits until the program
-  // holds that many seconds of picture (30 packets a second). In real time that
-  // is the wall clock; on a runner that cannot keep real time (GitHub's Intel
-  // Macs made 6 s of picture in 16 s) every step still gets its seconds.
-  const at = async (s) => {
-    const until = Date.now() + 30000;
-    while (video.length < Math.round(s * 30) && Date.now() < until) await sleep(10);
-  };
+  const tOut = Date.now();
+  const at = (s) => sleep(Math.max(0, tOut + s * 1000 - Date.now()));
 
   await client.previewFeed({ on: true, width: 854, height: 480, fps: 15, kbps: 800 });
   await client.thumbnails({ on: true, width: 256, height: 144, fps: 4 });
@@ -369,6 +363,14 @@ async function main() {
   const threadsActive = threadCount(pid);
   await at(rateAt); const rateWall = Date.now(); await client.setBitrate(2000);
   await at(stopAt);
+  // Stop once the recording holds the whole schedule. In real time it already
+  // does; on a runner that cannot keep real time the packets can trail the
+  // commands by many seconds (libobs repeats late frames, so their timestamps
+  // still follow the clock) — GitHub's Intel Macs had received only 6.2 s of
+  // picture after 16 s.
+  for (const until = Date.now() + 60000; Date.now() < until; await sleep(50)) {
+    if (video.length && (video[video.length - 1].ptsUs - video[0].ptsUs) / 1e6 >= stopAt - 0.2) break;
+  }
   const stopRes = await client.stopOutput();
   await client.previewFeed({ on: false });
   await client.thumbnails({ on: false });
