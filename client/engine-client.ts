@@ -582,8 +582,8 @@ export class EngineClient {
   setPreview(id: number | null) { return this.command('set_preview', { id }); }
   overlayVisible(id: number, visible: boolean) { return this.command('overlay_visible', { id, visible }); }
   media(id: number, action: 'play' | 'pause' | 'restart' | 'stop') { return this.command('media', { id, action }); }
-  startOutput(a: { video_kbps?: number; audio_kbps?: number; keyint_sec?: number; encoder?: 'auto' | 'hardware' | 'x264' | string; quality?: 'balanced' | 'best' } = {}) {
-    return this.command<{ encoder: string; preset: string; quality: 'balanced' | 'best'; hardware: boolean; audio_encoder: string; video_kbps: number }>('start_output', a);
+  startOutput(a: { video_kbps?: number; audio_kbps?: number; keyint_sec?: number; encoder?: 'auto' | 'hardware' | 'x264' | string; encoder_settings?: Record<string, Record<string, unknown>> } = {}) {
+    return this.command<{ encoder: string; settings: Record<string, unknown>; hardware: boolean; audio_encoder: string; video_kbps: number }>('start_output', a);
   }
   stopOutput() { return this.command('stop_output', {}, 15000); }
   setBitrate(kbps: number) { return this.command('set_bitrate', { kbps }); }
