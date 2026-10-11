@@ -8,13 +8,17 @@
 //   FFMPEG          ffmpeg binary (default: ffmpeg on PATH)
 //   SKYNAT_TEST_CAMERA=1  also opens the first camera (needs camera permission)
 //   SKYNAT_ENGINE_TEST_SOFTWARE=1  CI only (honoured only when CI=true, as on GitHub
-//                   Actions): the runners are virtual machines without a hardware video
-//                   encoder, so the program may use the software x264 fallback there.
-//                   Every other check stays as strict as on a real computer. If the
-//                   runner's graphics cannot start at all (no Direct3D 11 device, not even
-//                   WARP), the test says so plainly and checks the pipe without video
-//                   (--no-video: ready, hello, refusals, stats, shutdown) instead.
-//                   Local runs ignore it: a computer without hardware H.264 fails.
+//                   Actions). The runners are virtual machines:
+//                   - without a hardware video encoder the program may use the software
+//                     x264 fallback;
+//                   - without a GPU, libobs renders on a software rasterizer (Apple
+//                     Software Renderer, Microsoft Basic Render Driver), which cannot draw
+//                     1080p in real time: the checks then run on a 480x270 canvas at
+//                     30 fps (positions and sizes scale with it);
+//                   - if the renderer cannot start at all, the test says so plainly and
+//                     checks the pipe without video (--no-video) instead.
+//                   Every check itself stays exactly as strict as on a real computer.
+//                   Local runs ignore the variable: 1080p30 and hardware H.264 required.
 //
 // Run it at normal priority (performance numbers are measured) and alone.
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -44,7 +48,15 @@ if (process.env.SKYNAT_ENGINE_TEST_SOFTWARE === '1' && !CI) {
   console.log('NOTE  SKYNAT_ENGINE_TEST_SOFTWARE is ignored outside CI: this run requires hardware H.264.\n');
 }
 // What the run proved, for the summary (last-run.json).
-let mode = 'full';
+let mode = 'full';            // 'full', or 'no-gpu' (the renderer could not start at all)
+let softwareEncoder = false;  // CI runner without a hardware H.264 encoder: x264 accepted
+let softwareRenderer = false; // CI runner without a GPU: a CPU rasterizer, small canvas
+let adapter = '';             // the graphics adapter libobs rendered on
+let encoderUsed = '';         // the program's video encoder
+// The canvas the checks run at: 1920x1080, or SMALL on a CI runner whose
+// "GPU" is a software rasterizer (it cannot draw 1080p in real time).
+const SMALL = { w: 480, h: 270 };
+let W = 1920, H = 1080;
 
 function findFfmpeg() {
   const candidates = [process.env.FFMPEG];
@@ -115,17 +127,7 @@ async function main() {
   check('engine executable exists', existsSync(ENGINE), ENGINE);
   if (!existsSync(ENGINE)) return;
 
-  // 1. Test clip: 10 s, 1080p30, H.264 + 440 Hz AAC.
-  const clip = join(OUT_DIR, 'clip-1080p30.mp4');
-  if (!existsSync(clip)) {
-    const r = ffmpeg(['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=30', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
-      '-t', '10', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-g', '30', '-c:a', 'aac', '-b:a', '128k', '-shortest', clip]);
-    check('test clip generated with ffmpeg', r.code === 0 && existsSync(clip), r.stderr.slice(0, 300));
-  } else {
-    check('test clip present', true, clip);
-  }
-
-  // 2. Main session.
+  // 1. Main session (the test clip is made once the canvas size is known).
   const log = engineLog;
   const client = new EngineClient({ executable: ENGINE, args: ['--log-level', 'info'], restart: false, startTimeoutMs: 20000, onLog: (l) => log.push(l) });
   const startEvents = [];
@@ -175,7 +177,7 @@ async function main() {
   if (hw.length > 0 || !SOFTWARE_OK) {
     check('hardware H.264 encoder found', hw.length > 0, hw.join(', '));
   } else {
-    mode = 'software-encoder';
+    softwareEncoder = true;
     note('hardware H.264 encoder', 'none on this CI runner (a virtual machine): the software x264 fallback is accepted here (SKYNAT_ENGINE_TEST_SOFTWARE=1); every other check is unchanged');
     check('software x264 fallback available', ready.encoders.x264 === true);
   }
@@ -186,6 +188,41 @@ async function main() {
   const hello = await client.hello();
   check('hello answers with capabilities', hello.engine === 'skynat-engine' && hello.protocol === 1, `version ${hello.version}`);
   if (CI) await client.stats(1000);
+
+  // The adapter libobs rendered on (its log says "Loading up OpenGL|D3D11 on adapter …").
+  const adapterLine = log.find((l) => /Loading up (OpenGL|D3D11) on adapter/.test(l)) || '';
+  adapter = (adapterLine.match(/on adapter (.+?)(?: \(\d+\))?$/) || [])[1] || 'unknown';
+  const cpuRenderer = /Software Renderer|Basic Render Driver/i.test(adapter);
+  note('graphics adapter', adapter);
+  if (cpuRenderer && SOFTWARE_OK) {
+    // A virtual machine without a GPU: the "GPU" is a software rasterizer on the
+    // CPU (about 200 ms for one 1080p frame on GitHub's macOS runners), so
+    // nothing could run in real time at 1080p. The checks run on a small canvas
+    // the CPU can render 30 times a second instead — every check unchanged.
+    softwareRenderer = true;
+    W = SMALL.w; H = SMALL.h;
+    console.log('\n' + '='.repeat(78));
+    console.log(`THIS RUNNER HAS NO GPU: libobs renders on "${adapter}", a software`);
+    console.log(`rasterizer on the CPU, which cannot draw 1920x1080 30 times a second. The`);
+    console.log(`end-to-end checks therefore run on a ${W}x${H} canvas at 30 fps; every check is`);
+    console.log(`otherwise unchanged. 1080p real-time behaviour is proven on real hardware.`);
+    console.log('='.repeat(78) + '\n');
+    const c = await client.configure({ width: W, height: H, fps: 30 });
+    check(`configure: the ${W}x${H} canvas for this runner`, c.width === W && c.height === H && c.fps_num === 30, JSON.stringify(c));
+  }
+  const k = W / 1920; // positions below are designed on 1920x1080 and scaled to the canvas
+  const sc = (v) => Math.round(v * k);
+
+  // 2. Test clip: 10 s at the canvas size, 30 fps, H.264 + 440 Hz AAC.
+  const clip = join(OUT_DIR, `clip-${W}x${H}p30.mp4`);
+  if (!existsSync(clip)) {
+    const r = ffmpeg(['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=size=${W}x${H}:rate=30`, '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
+      '-t', '10', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-g', '30', '-c:a', 'aac', '-b:a', '128k', '-shortest', clip]);
+    check('test clip generated with ffmpeg', r.code === 0 && existsSync(clip), r.stderr.slice(0, 300));
+  } else {
+    check('test clip present', true, clip);
+  }
+
   const devices = await client.listDevices();
   note('cameras', `${devices.cameras.length} found, permission ${devices.camera_permission}: ${devices.cameras.map((c) => `${c.name}${c.best_format ? ` (${c.best_format.width}x${c.best_format.height}@${c.best_format.fps})` : ''}`).join(' | ')}`);
 
@@ -193,9 +230,13 @@ async function main() {
   try { await client.command('no_such_command'); } catch (e) { unknownOk = /unknown command/.test(e.message); }
   check('unknown command is answered with an error result', unknownOk);
 
+  // Overlay layers, designed on 1080p: a red 400x200 at (100, 100) and a 50 % white
+  // 200x100 at (1200, 600); scaled with the canvas.
+  const ov1 = { x: sc(100), y: sc(100), w: sc(400), h: sc(200) & ~1 };
+  const ov2 = { x: sc(1200), y: sc(600), w: sc(200), h: sc(100) };
   await client.addSource({ id: 1, type: 'media', path: clip, loop: true });
   await client.addSource({ id: 2, type: 'color', color: '#0000ff' });
-  await client.addSource({ id: 10, type: 'overlay', width: 400, height: 200, x: 100, y: 100 });
+  await client.addSource({ id: 10, type: 'overlay', width: ov1.w, height: ov1.h, x: ov1.x, y: ov1.y });
   await client.addSource({ id: 20, type: 'pcm' });
   // An image input (magenta PNG made with ffmpeg) — checked through its thumbnail.
   const png = join(OUT_DIR, 'magenta.png');
@@ -208,15 +249,16 @@ async function main() {
   }
 
   // Overlay: a solid red layer, sent in two halves to exercise rectangles.
-  const red = Buffer.alloc(400 * 200 * 4);
+  const red = Buffer.alloc(ov1.w * ov1.h * 4);
   for (let i = 0; i < red.length; i += 4) { red[i] = 255; red[i + 1] = 0; red[i + 2] = 0; red[i + 3] = 255; }
-  client.sendOverlay(10, 0, 0, 400, 100, 1600, red, true);
-  client.sendOverlay(10, 0, 100, 400, 100, 1600, red.subarray(400 * 100 * 4));
-  // A second layer: 50 % white, straight alpha, at (1200, 600) 200x100.
-  await client.addSource({ id: 11, type: 'overlay', width: 200, height: 100, x: 1200, y: 600 });
-  const half = Buffer.alloc(200 * 100 * 4);
+  const halfRows = ov1.h / 2;
+  client.sendOverlay(10, 0, 0, ov1.w, halfRows, ov1.w * 4, red, true);
+  client.sendOverlay(10, 0, halfRows, ov1.w, halfRows, ov1.w * 4, red.subarray(ov1.w * halfRows * 4));
+  // A second layer: 50 % white, straight alpha.
+  await client.addSource({ id: 11, type: 'overlay', width: ov2.w, height: ov2.h, x: ov2.x, y: ov2.y });
+  const half = Buffer.alloc(ov2.w * ov2.h * 4);
   for (let i = 0; i < half.length; i += 4) { half[i] = 255; half[i + 1] = 255; half[i + 2] = 255; half[i + 3] = 128; }
-  client.sendOverlay(11, 0, 0, 200, 100, 800, half);
+  client.sendOverlay(11, 0, 0, ov2.w, ov2.h, ov2.w * 4, half);
 
   await client.setProgram(1, 'cut');
   await client.setPreview(2);
@@ -251,10 +293,11 @@ async function main() {
   client.on('thumbnail', (t) => { const l = thumbs.get(t.id) || []; l.push({ w: t.width, h: t.height, len: t.data.length, px: [...t.data.subarray((72 * t.width + 128) * 4, (72 * t.width + 128) * 4 + 4)] }); thumbs.set(t.id, l); });
 
   const out = await client.startOutput({ video_kbps: 6000, audio_kbps: 160 });
+  encoderUsed = out.encoder;
   if (out.hardware === true || !SOFTWARE_OK) {
     check('output started on the hardware encoder', out.hardware === true, `${out.encoder} + ${out.audio_encoder}`);
   } else {
-    mode = 'software-encoder';
+    softwareEncoder = true;
     check('output started on the software x264 fallback (CI runner without a hardware encoder)', out.encoder === 'obs_x264',
       `${out.encoder} + ${out.audio_encoder}`);
   }
@@ -291,8 +334,8 @@ async function main() {
   }
 
   // ---- program stream -------------------------------------------------------
-  check('avcC received before video', vcfg && vcfg.avcC[0] === 1 && vcfg.width === 1920 && vcfg.height === 1080,
-    vcfg ? `profile 0x${vcfg.avcC[1].toString(16)} level ${vcfg.avcC[3] / 10}, ${vcfg.fpsNum}/${vcfg.fpsDen} fps, ${vcfg.kbps} kbps` : 'none');
+  check('avcC received before video', vcfg && vcfg.avcC[0] === 1 && vcfg.width === W && vcfg.height === H,
+    vcfg ? `${vcfg.width}x${vcfg.height}, profile 0x${vcfg.avcC[1].toString(16)} level ${vcfg.avcC[3] / 10}, ${vcfg.fpsNum}/${vcfg.fpsDen} fps, ${vcfg.kbps} kbps` : 'none');
   check('H.264 High profile', vcfg && vcfg.avcC[1] === 100);
   check('AudioSpecificConfig received (AAC-LC 48 kHz stereo)', acfg && acfg.sampleRate === 48000 && acfg.channels === 2 && ((acfg.asc[0] >> 3) === 2),
     acfg ? acfg.asc.toString('hex') : 'none');
@@ -340,7 +383,7 @@ async function main() {
   const probe = ffmpeg(['-i', flvFile]);
   const vLine = probe.stderr.split('\n').find((l) => /Stream #0:\d.*Video:/.test(l)) || '';
   const aLine = probe.stderr.split('\n').find((l) => /Stream #0:\d.*Audio:/.test(l)) || '';
-  check('FLV probes as h264 1920x1080 30 fps', /h264/.test(vLine) && /1920x1080/.test(vLine) && /\b30 fps/.test(vLine), vLine.trim());
+  check(`FLV probes as h264 ${W}x${H} 30 fps`, /h264/.test(vLine) && vLine.includes(`${W}x${H}`) && /\b30 fps/.test(vLine), vLine.trim());
   check('FLV probes as aac 48000 Hz stereo', /aac/.test(aLine) && /48000 Hz/.test(aLine) && /stereo/.test(aLine), aLine.trim());
   const dec = ffmpeg(['-v', 'error', '-i', flvFile, '-f', 'null', '-']);
   check('FLV decodes without errors', dec.code === 0 && dec.stderr.trim() === '', dec.stderr.slice(0, 300));
@@ -348,26 +391,29 @@ async function main() {
 
   // Overlay over media (t=2 s) and over blue (t=5 s); cut and fade.
   const ptsOf = (wall) => (wall - firstPacketAt) / 1000;
-  const f2 = decodeFrame(flvFile, 2.0, 1920, 1080);
-  const inOverlay = f2 && rgbAt(f2, 1920, 300, 200);
-  check('overlay composited on Program (red layer at 100,100)', inOverlay && inOverlay[0] > 200 && inOverlay[1] < 60 && inOverlay[2] < 60, inOverlay && inOverlay.join(','));
+  const f2 = decodeFrame(flvFile, 2.0, W, H);
+  const ovMid = [ov1.x + Math.floor(ov1.w / 2), ov1.y + Math.floor(ov1.h / 2)];
+  const inOverlay = f2 && rgbAt(f2, W, ovMid[0], ovMid[1]);
+  check(`overlay composited on Program (red layer at ${ov1.x},${ov1.y})`, inOverlay && inOverlay[0] > 200 && inOverlay[1] < 60 && inOverlay[2] < 60, inOverlay && inOverlay.join(','));
   const cutPts = ptsOf(cutWall);
-  const beforeCut = decodeFrame(flvFile, cutPts - 0.5, 1920, 1080), afterCut = decodeFrame(flvFile, cutPts + 0.5, 1920, 1080);
+  const beforeCut = decodeFrame(flvFile, cutPts - 0.5, W, H), afterCut = decodeFrame(flvFile, cutPts + 0.5, W, H);
   const dBefore = beforeCut ? blueDistance(beforeCut) : NaN, dAfter = afterCut ? blueDistance(afterCut) : NaN;
   check('set_program cut: media -> blue', dBefore > 100 && dAfter < 25, `distance from blue ${dBefore.toFixed(0)} -> ${dAfter.toFixed(0)}`);
-  const ov5 = afterCut && rgbAt(afterCut, 1920, 300, 200);
+  const ov5 = afterCut && rgbAt(afterCut, W, ovMid[0], ovMid[1]);
   check('overlay stays on top after the cut', ov5 && ov5[0] > 200 && ov5[2] < 60, ov5 && ov5.join(','));
   // Over plain blue: red just inside the layer's edges, blue just outside
   // (3 px margin — H.264 4:2:0 softens a sharp red/blue edge by a pixel or two).
-  const edge = afterCut && [[103, 103], [496, 296], [96, 200], [503, 200], [300, 96], [300, 303]].map(([x, y]) => rgbAt(afterCut, 1920, x, y));
+  const x1 = ov1.x + ov1.w - 1, y1 = ov1.y + ov1.h - 1; // last pixels inside the layer
+  const edge = afterCut && [[ov1.x + 3, ov1.y + 3], [x1 - 3, y1 - 3], [ov1.x - 4, ovMid[1]], [x1 + 4, ovMid[1]], [ovMid[0], ov1.y - 4], [ovMid[0], y1 + 4]]
+    .map(([x, y]) => rgbAt(afterCut, W, x, y));
   const isRed = (p) => p[0] > 200 && p[1] < 60 && p[2] < 60, isBlue = (p) => p[2] > 200 && p[0] < 60 && p[1] < 60;
-  check('overlay covers exactly its rectangle (x 100-499, y 100-299)', edge && isRed(edge[0]) && isRed(edge[1]) && edge.slice(2).every(isBlue),
+  check(`overlay covers exactly its rectangle (x ${ov1.x}-${x1}, y ${ov1.y}-${y1})`, edge && isRed(edge[0]) && isRed(edge[1]) && edge.slice(2).every(isBlue),
     edge && edge.map((p) => p.join('/')).join(' '));
-  const semi = afterCut && rgbAt(afterCut, 1920, 1300, 650);
+  const semi = afterCut && rgbAt(afterCut, W, ov2.x + Math.floor(ov2.w / 2), ov2.y + Math.floor(ov2.h / 2));
   check('semi-transparent overlay blends (50 % white over blue)', semi && Math.abs(semi[0] - 128) < 30 && Math.abs(semi[1] - 128) < 30 && semi[2] > 225,
     semi && semi.join(','));
   const fadePts = ptsOf(fadeWall);
-  const fd = [-0.25, 0.5, 1.6].map((dt) => { const f = decodeFrame(flvFile, fadePts + dt, 1920, 1080); return f ? blueDistance(f) : NaN; });
+  const fd = [-0.25, 0.5, 1.6].map((dt) => { const f = decodeFrame(flvFile, fadePts + dt, W, H); return f ? blueDistance(f) : NaN; });
   check('set_program fade (1 s): blue -> mix -> media', fd[0] < 25 && fd[1] > fd[0] + 15 && fd[1] < fd[2] - 15 && fd[2] > 100,
     fd.map((d) => d.toFixed(0)).join(' -> '));
 
@@ -382,10 +428,12 @@ async function main() {
   check('media audio leaves Program with the clip (cut to blue)', t440Blue < t440 / 5, `amplitude ${t440Blue.toFixed(3)}`);
 
   // ---- monitor feeds ----------------------------------------------------------
+  // 854x480 asked for; the engine never makes a feed larger than the canvas.
+  const fw = Math.min(854, W) & ~1, fh = Math.min(480, H) & ~1;
   for (const id of [0, 1]) {
     const name = id === 0 ? 'Program' : 'Preview';
     const c = feedCfg[id];
-    check(`${name} feed config 854x480 @ 15 fps`, c && c.width === 854 && c.height === 480 && c.fpsNum / c.fpsDen === 15,
+    check(`${name} feed config ${fw}x${fh} @ 15 fps`, c && c.width === fw && c.height === fh && c.fpsNum / c.fpsDen === 15,
       c ? `${c.width}x${c.height} ${c.fpsNum}/${c.fpsDen} ${c.kbps} kbps` : 'none');
     const fp = feeds[id];
     const fspan = fp.length > 1 ? (fp[fp.length - 1].ptsUs - fp[0].ptsUs) / 1e6 : 0;
@@ -395,9 +443,9 @@ async function main() {
     writeFileSync(ff, feedFlv[id].bytes());
     const fprobe = ffmpeg(['-i', ff]);
     const fl = fprobe.stderr.split('\n').find((l) => /Video:/.test(l)) || '';
-    check(`${name} feed decodes as h264 854x480`, /h264/.test(fl) && /854x480/.test(fl), fl.trim());
+    check(`${name} feed decodes as h264 ${fw}x${fh}`, /h264/.test(fl) && fl.includes(`${fw}x${fh}`), fl.trim());
     if (id === 1) {
-      const pf = decodeFrame(ff, 1.0, 854, 480);
+      const pf = decodeFrame(ff, 1.0, fw, fh);
       const d = pf ? blueDistance(pf) : NaN;
       check('Preview feed shows the preview input (blue)', d < 25, `distance ${d.toFixed(0)}`);
     }
@@ -415,7 +463,7 @@ async function main() {
 
   // ---- stats ------------------------------------------------------------------
   const cpuPs = ((cpu2 - cpu1) / ((w2 - w1) / 1000)) * 100;
-  note('engine CPU (ps, 1080p30 media + overlay + PCM + 6 Mbps program + 2 feeds + thumbnails)', `${cpuPs.toFixed(1)} % of one core; engine's own figure ${st.cpu_percent.toFixed(1)} %`);
+  note(`engine CPU (ps, ${W}x${H}p30 media + overlay + PCM + 6 Mbps program + 2 feeds + thumbnails)`, `${cpuPs.toFixed(1)} % of one core; engine's own figure ${st.cpu_percent.toFixed(1)} %`);
   note('render time', `${st.render_ms.toFixed(2)} ms average per frame`);
   note('threads while everything runs', `${threadsActive} (ps -M), engine says ${st.threads}`);
   note('memory', `${st.memory_mb} MB`);
@@ -447,7 +495,7 @@ async function main() {
   await sleep(700);
   await client.previewFeed({ on: false });
   client.off('feedConfig', onFeedCfg);
-  check('monitor feed restarts with new parameters', feedCfgs.length >= 2 && feedCfgs[0].width === 640 && feedCfgs.at(-1).width === 426 && feedCfgs.at(-1).height === 240 && feedCfgs.at(-1).fpsNum / feedCfgs.at(-1).fpsDen === 10,
+  check('monitor feed restarts with new parameters', feedCfgs.length >= 2 && feedCfgs[0].width === (Math.min(640, W) & ~1) && feedCfgs.at(-1).width === 426 && feedCfgs.at(-1).height === 240 && feedCfgs.at(-1).fpsNum / feedCfgs.at(-1).fpsDen === 10,
     feedCfgs.map((c) => `${c.width}x${c.height}@${c.fpsNum / c.fpsDen}`).join(' -> '));
 
   let missing = '';
@@ -465,8 +513,10 @@ async function main() {
   check('non-looping media reports "ended"', !!ended, ended ? `after ${ended.at - endedAt} ms` : 'no event');
   await client.removeSource(6);
 
-  // Change the canvas (outputs stopped), encode a moment at 1280x720 60 fps, and back.
-  const cfg = await client.configure({ width: 1280, height: 720, fps: 60 });
+  // Change the canvas (outputs stopped), encode a moment at 60 fps on another size, and back
+  // (1280x720; a third of the canvas on a CPU-rendered runner).
+  const alt = softwareRenderer ? { w: (W / 3) & ~1, h: (H / 3) & ~1 } : { w: 1280, h: 720 };
+  const cfg = await client.configure({ width: alt.w, height: alt.h, fps: 60 });
   let cfg720 = null, n720 = 0;
   const onCfg = (c) => { cfg720 = c; }, onPkt = () => { n720++; };
   client.on('videoConfig', onCfg); client.on('videoPacket', onPkt);
@@ -478,14 +528,14 @@ async function main() {
   check('software x264 only when asked for', x264.encoder === 'obs_x264' && x264.hardware === false && n720 > 30, `${x264.encoder}, ${n720} packets`);
   client.off('videoConfig', onCfg); client.off('videoPacket', onPkt);
   const st720 = await client.stats();
-  check('configure: 1280x720 at 60 fps', cfg.width === 1280 && cfg.fps_num === 60 && cfg720 && cfg720.width === 1280 && cfg720.height === 720 && cfg720.fpsNum === 60 && st720.fps === 60,
+  check(`configure: ${alt.w}x${alt.h} at 60 fps`, cfg.width === alt.w && cfg.fps_num === 60 && cfg720 && cfg720.width === alt.w && cfg720.height === alt.h && cfg720.fpsNum === 60 && st720.fps === 60,
     `${cfg720 ? `${cfg720.width}x${cfg720.height} ${cfg720.fpsNum}/${cfg720.fpsDen}` : 'no config'}, ${n720} packets in 1.5 s`);
   let busy = '';
   await client.startOutput({ video_kbps: 3000 });
-  try { await client.configure({ width: 1920, height: 1080, fps: 30 }); } catch (e) { busy = e.message; }
+  try { await client.configure({ width: W, height: H, fps: 30 }); } catch (e) { busy = e.message; }
   await client.stopOutput();
   check('configure refuses while the output runs', /stop the output/.test(busy), busy);
-  await client.configure({ width: 1920, height: 1080, fps: 30 });
+  await client.configure({ width: W, height: H, fps: 30 });
 
   await client.stop();
   check('shutdown command exits the engine', !client.running);
@@ -582,6 +632,7 @@ main().catch((e) => {
 }).finally(() => {
   const failed = results.filter((r) => !r.ok);
   const summary = { when: new Date().toISOString(), engine: ENGINE, platform: `${process.platform}-${process.arch}`, ci: CI, mode,
+    canvas: mode === 'no-gpu' ? null : `${W}x${H}`, adapter, encoder: encoderUsed, software_renderer: softwareRenderer, software_encoder: softwareEncoder,
     passed: results.filter((r) => r.ok && !r.note).length, failed: failed.length, results };
   writeFileSync(join(OUT_DIR, 'last-run.json'), JSON.stringify(summary, null, 2));
   writeFileSync(join(OUT_DIR, 'engine.log'), engineLog.join('\n'));
@@ -590,8 +641,9 @@ main().catch((e) => {
     console.log(engineLog.slice(-120).join('\n'));
     console.log('---- end of the engine log ----');
   }
-  const modeText = { full: 'full run', 'software-encoder': 'full run on the software x264 fallback (CI runner without a hardware encoder)',
-    'no-gpu': 'NO GPU on this runner: video checks not run, pipe checked with --no-video' }[mode];
+  const modeText = mode === 'no-gpu' ? 'NO GPU on this runner: video checks not run, pipe checked with --no-video'
+    : `full run at ${W}x${H}${softwareRenderer ? ` on a CPU rasterizer (${adapter}; no GPU on this runner)` : ''}` +
+      `${softwareEncoder ? ', program on the software x264 fallback (no hardware encoder on this runner)' : encoderUsed ? `, encoder ${encoderUsed}` : ''}`;
   console.log(`\n${summary.passed} passed, ${failed.length} failed — ${modeText}`);
   process.exit(failed.length ? 1 : 0);
 });

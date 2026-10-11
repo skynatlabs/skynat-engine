@@ -280,7 +280,7 @@ jobs:
             echo "Built and tested by GitHub Actions from this tag (tests/framing.test.mjs and tests/engine.test.mjs on each platform):"
             echo
             for f in results/*/last-run.json; do
-              jq -r '"- \(.platform): \(.passed) checks passed, \(.failed) failed — " + (if .mode == "full" then "full run on a hardware encoder" elif .mode == "software-encoder" then "full run; the runner (a virtual machine) has no hardware video encoder, so the program used the software x264 fallback" else "this runner has no GPU: the pipe was checked without video" end)' "$f"
+              jq -r '"- \(.platform): \(.passed) checks passed, \(.failed) failed — " + (if .mode == "no-gpu" then "this runner has no GPU at all: the pipe was checked without video" else "full end-to-end run at \(.canvas)" + (if .software_renderer then " (the runner has no GPU: libobs rendered on \(.adapter), a CPU rasterizer, so the canvas was reduced)" else " on \(.adapter)" end) + (if .software_encoder then "; program on the software x264 fallback (no hardware encoder on the runner)" else "; program encoder \(.encoder)" end) end)' "$f"
             done
           } > notes.md
           cat notes.md

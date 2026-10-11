@@ -87,8 +87,12 @@ if (-not (Test-Path (Join-Path $ObsSrc '.git'))) {
 }
 $haveTag = (git -C $ObsSrc describe --tags --exact-match 2>$null)
 if ($haveTag -ne $ObsTag) { throw "$ObsSrc is at '$haveTag', expected $ObsTag (delete it to re-clone)" }
-if (git -C $ObsSrc status --porcelain --untracked-files=no) {
-  throw "$ObsSrc has local changes — the engine is built from unmodified OBS"
+# The repository's few symlinks (CI helper scripts under .github/ and build-aux/, none used by
+# this build) can come back from an archive as plain copies on Windows; they are not changes.
+$symlinks = @(git -C $ObsSrc ls-files -s | Where-Object { $_ -match '^120000 ' } | ForEach-Object { ($_ -split "`t", 2)[1] })
+$changes = @(git -C $ObsSrc status --porcelain --untracked-files=no | Where-Object { $symlinks -notcontains $_.Substring(3).Trim('"') })
+if ($changes.Count) {
+  throw "$ObsSrc has local changes — the engine is built from unmodified OBS:`n$($changes -join "`n")"
 }
 if (Get-ChildItem -Path (Join-Path $Root 'patches') -Filter '*.patch' -ErrorAction SilentlyContinue) {
   throw 'patches/ is not empty; apply them deliberately and record them in NOTICE.md first'
