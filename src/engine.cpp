@@ -204,7 +204,7 @@ bool Engine::startup(std::string *error)
 		return false;
 	}
 
-	if (!reset_video(opt_.width, opt_.height, opt_.fps_num, opt_.fps_den, error))
+	if (opt_.video && !reset_video(opt_.width, opt_.height, opt_.fps_num, opt_.fps_den, error))
 		return false;
 
 	register_engine_sources();
@@ -237,19 +237,21 @@ bool Engine::startup(std::string *error)
 	}
 	obs_post_load_modules();
 
-	transition_ = obs_source_create_private("fade_transition", "program", nullptr);
-	if (!transition_) {
-		*error = "the obs-transitions module is missing (fade_transition)";
-		return false;
+	if (opt_.video) {
+		transition_ = obs_source_create_private("fade_transition", "program", nullptr);
+		if (!transition_) {
+			*error = "the obs-transitions module is missing (fade_transition)";
+			return false;
+		}
+		obs_transition_set_size(transition_, opt_.width, opt_.height);
+		obs_set_output_source(0, transition_);
+
+		overlay_scene_ = obs_scene_create_private("overlays");
+		obs_set_output_source(1, obs_scene_get_source(overlay_scene_));
+
+		preview_view_ = obs_view_create();
+		thumbs_ = std::make_unique<Thumbnails>(writer_);
 	}
-	obs_transition_set_size(transition_, opt_.width, opt_.height);
-	obs_set_output_source(0, transition_);
-
-	overlay_scene_ = obs_scene_create_private("overlays");
-	obs_set_output_source(1, obs_scene_get_source(overlay_scene_));
-
-	preview_view_ = obs_view_create();
-	thumbs_ = std::make_unique<Thumbnails>(writer_);
 
 	for (const auto &id : platform::hardware_h264_encoders())
 		if (obs_get_encoder_codec(id.c_str()))
@@ -261,7 +263,8 @@ bool Engine::startup(std::string *error)
 	obs_add_tick_callback(stats_tick, this);
 	started_ = true;
 	blog(LOG_INFO, "[skynat-engine] started: %ux%u %u/%u fps, renderer %s, %u modules, h264 hw: %s",
-	     opt_.width, opt_.height, opt_.fps_num, opt_.fps_den, g_graphics_module.c_str(), (unsigned)loaded.size(),
+	     opt_.width, opt_.height, opt_.fps_num, opt_.fps_den,
+	     opt_.video ? g_graphics_module.c_str() : "none (--no-video)", (unsigned)loaded.size(),
 	     hw_encoders_.empty() ? "none" : hw_encoders_[0].c_str());
 	return true;
 }
@@ -292,9 +295,9 @@ std::string Engine::capabilities_json()
 		.str("version", kEngineVersion)
 		.integer("protocol", kProtocolVersion)
 		.str("libobs", obs_get_version_string())
-		.str("renderer", opt_.renderer)
+		.str("renderer", opt_.video ? opt_.renderer : "none")
 		.integer("pid", platform::process_id())
-		.raw("video", video.dump())
+		.raw("video", opt_.video ? video.dump() : "null")
 		.raw("audio", audio.dump())
 		.raw("encoders", enc.dump())
 		.raw("sources", "[\"camera\",\"media\",\"image\",\"color\",\"overlay\",\"pcm\"]");
@@ -405,42 +408,46 @@ void Engine::handle_command(const std::string &json)
 	std::string data;
 	std::string error;
 	bool quit = false;
+	// Commands that need the renderer (all but hello, list_devices, stats and
+	// shutdown) are refused when the engine runs with --no-video.
+	using Handler = std::string (Engine::*)(obs_data_t *);
+	static const struct {
+		const char *name;
+		Handler fn;
+		bool video;
+	} kCommands[] = {
+		{"hello", &Engine::cmd_hello, false},
+		{"configure", &Engine::cmd_configure, true},
+		{"list_devices", &Engine::cmd_list_devices, false},
+		{"add_source", &Engine::cmd_add_source, true},
+		{"update_source", &Engine::cmd_update_source, true},
+		{"remove_source", &Engine::cmd_remove_source, true},
+		{"set_program", &Engine::cmd_set_program, true},
+		{"set_preview", &Engine::cmd_set_preview, true},
+		{"overlay_visible", &Engine::cmd_overlay_visible, true},
+		{"media", &Engine::cmd_media, true},
+		{"start_output", &Engine::cmd_start_output, true},
+		{"stop_output", &Engine::cmd_stop_output, true},
+		{"set_bitrate", &Engine::cmd_set_bitrate, true},
+		{"preview_feed", &Engine::cmd_preview_feed, true},
+		{"thumbnails", &Engine::cmd_thumbnails, true},
+		{"stats", &Engine::cmd_stats, false},
+	};
 	try {
-		if (name == "hello")
-			data = cmd_hello(cmd);
-		else if (name == "configure")
-			data = cmd_configure(cmd);
-		else if (name == "list_devices")
-			data = cmd_list_devices(cmd);
-		else if (name == "add_source")
-			data = cmd_add_source(cmd);
-		else if (name == "update_source")
-			data = cmd_update_source(cmd);
-		else if (name == "remove_source")
-			data = cmd_remove_source(cmd);
-		else if (name == "set_program")
-			data = cmd_set_program(cmd);
-		else if (name == "set_preview")
-			data = cmd_set_preview(cmd);
-		else if (name == "overlay_visible")
-			data = cmd_overlay_visible(cmd);
-		else if (name == "media")
-			data = cmd_media(cmd);
-		else if (name == "start_output")
-			data = cmd_start_output(cmd);
-		else if (name == "stop_output")
-			data = cmd_stop_output(cmd);
-		else if (name == "set_bitrate")
-			data = cmd_set_bitrate(cmd);
-		else if (name == "preview_feed")
-			data = cmd_preview_feed(cmd);
-		else if (name == "thumbnails")
-			data = cmd_thumbnails(cmd);
-		else if (name == "stats")
-			data = cmd_stats(cmd);
-		else if (name == "shutdown")
+		bool known = false;
+		if (name == "shutdown") {
+			known = true;
 			quit = true;
-		else
+		}
+		for (const auto &c : kCommands) {
+			if (known || name != c.name)
+				continue;
+			known = true;
+			if (c.video && !opt_.video)
+				throw CommandError("video is off (the engine was started with --no-video)");
+			data = (this->*c.fn)(cmd);
+		}
+		if (!known)
 			throw CommandError("unknown command \"" + name + "\"");
 	} catch (const CommandError &e) {
 		error = e.what();
@@ -1324,7 +1331,7 @@ std::string Engine::stats_json()
 	last_cpu_ = cpu;
 	last_cpu_wall_ = now;
 
-	video_t *video = obs_get_video();
+	video_t *video = opt_.video ? obs_get_video() : nullptr;
 	JsonObj out;
 	out.boolean("active", output_ && obs_output_active(output_));
 	if (output_) {

@@ -3,9 +3,18 @@
 //   node tests/engine.test.mjs
 //
 // Environment:
-//   SKYNAT_ENGINE   engine executable (default dist/darwin-<arch>/bin/skynat-engine)
+//   SKYNAT_ENGINE   engine executable (default dist/darwin-<arch>/bin/skynat-engine,
+//                   Windows dist/win32-x64/skynat-engine.exe)
 //   FFMPEG          ffmpeg binary (default: ffmpeg on PATH)
 //   SKYNAT_TEST_CAMERA=1  also opens the first camera (needs camera permission)
+//   SKYNAT_ENGINE_TEST_SOFTWARE=1  CI only (honoured only when CI=true, as on GitHub
+//                   Actions): the runners are virtual machines without a hardware video
+//                   encoder, so the program may use the software x264 fallback there.
+//                   Every other check stays as strict as on a real computer. If the
+//                   runner's graphics cannot start at all (no Direct3D 11 device, not even
+//                   WARP), the test says so plainly and checks the pipe without video
+//                   (--no-video: ready, hello, refusals, stats, shutdown) instead.
+//                   Local runs ignore it: a computer without hardware H.264 fails.
 //
 // Run it at normal priority (performance numbers are measured) and alone.
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -25,6 +34,14 @@ const ENGINE = process.env.SKYNAT_ENGINE || (process.platform === 'win32'
   : join(ROOT, 'dist', PLATFORM_DIR, 'bin', 'skynat-engine'));
 const OUT_DIR = join(ROOT, 'tests', 'results');
 mkdirSync(OUT_DIR, { recursive: true });
+
+const CI = process.env.CI === 'true';
+const SOFTWARE_OK = process.env.SKYNAT_ENGINE_TEST_SOFTWARE === '1' && CI;
+if (process.env.SKYNAT_ENGINE_TEST_SOFTWARE === '1' && !CI) {
+  console.log('NOTE  SKYNAT_ENGINE_TEST_SOFTWARE is ignored outside CI: this run requires hardware H.264.\n');
+}
+// What the run proved, for the summary (last-run.json).
+let mode = 'full';
 
 function findFfmpeg() {
   const candidates = [process.env.FFMPEG];
@@ -107,13 +124,49 @@ async function main() {
 
   // 2. Main session.
   const log = [];
-  const client = new EngineClient({ executable: ENGINE, args: ['--log-level', 'info'], restart: false, onLog: (l) => log.push(l) });
+  const client = new EngineClient({ executable: ENGINE, args: ['--log-level', 'info'], restart: false, startTimeoutMs: 20000, onLog: (l) => log.push(l) });
+  const startEvents = [];
+  const onStartEvent = (ev) => startEvents.push(ev);
+  client.on('event', onStartEvent);
+  let startExit = null;
+  client.on('exit', (info) => { if (!startExit) startExit = info; });
   const t0 = Date.now();
-  const ready = await client.start();
+  let ready;
+  try {
+    ready = await client.start();
+  } catch (e) {
+    for (let i = 0; i < 40 && !startExit; i++) await sleep(50);
+    const fatal = startEvents.find((ev) => ev.event === 'error' && ev.fatal);
+    writeFileSync(join(OUT_DIR, 'engine.log'), log.join('\n'));
+    // A runner without any usable GPU: the renderer cannot start (a missing
+    // graphics module is a packaging fault, never accepted here).
+    if (SOFTWARE_OK && fatal && /graphics not supported|obs_reset_video failed/.test(fatal.message)) {
+      mode = 'no-gpu';
+      console.log('\n' + '='.repeat(78));
+      console.log('VIDEO CANNOT START ON THIS RUNNER: it has no usable GPU (the engine could not');
+      console.log(`create its ${process.platform === 'win32' ? 'Direct3D 11' : 'OpenGL'} renderer: "${fatal.message}").`);
+      console.log('The video, encoding, switching, feed and thumbnail checks need a GPU and were');
+      console.log('NOT run here. Checking the pipe without video (--no-video) instead.');
+      console.log('='.repeat(78) + '\n');
+      check('without a GPU the engine stops at start-up with a readable reason (exit 3)', startExit && startExit.code === 3,
+        `${fatal.message}; exit ${startExit ? startExit.code : 'not seen'}`);
+      await noVideoChecks();
+      return;
+    }
+    throw new Error(`engine did not start: ${fatal ? fatal.message : e.message}`);
+  }
+  client.off('event', onStartEvent);
   const readyMs = Date.now() - t0;
   check('ready event', ready.event === 'ready' && ready.protocol === 1 && ready.video.width === 1920 && ready.video.height === 1080,
     `${readyMs} ms, libobs ${ready.libobs}, renderer ${ready.renderer}`);
-  check('hardware H.264 encoder found', ready.encoders.h264_hardware.length > 0, ready.encoders.h264_hardware.join(', '));
+  const hw = ready.encoders.h264_hardware;
+  if (hw.length > 0 || !SOFTWARE_OK) {
+    check('hardware H.264 encoder found', hw.length > 0, hw.join(', '));
+  } else {
+    mode = 'software-encoder';
+    note('hardware H.264 encoder', 'none on this CI runner (a virtual machine): the software x264 fallback is accepted here (SKYNAT_ENGINE_TEST_SOFTWARE=1); every other check is unchanged');
+    check('software x264 fallback available', ready.encoders.x264 === true);
+  }
   check('AAC encoder found', ready.encoders.aac.length > 0, ready.encoders.aac.join(', '));
   const pid = ready.pid;
   note('threads at idle', `${threadCount(pid)} (ps -M)`);
@@ -185,7 +238,13 @@ async function main() {
   client.on('thumbnail', (t) => { const l = thumbs.get(t.id) || []; l.push({ w: t.width, h: t.height, len: t.data.length, px: [...t.data.subarray((72 * t.width + 128) * 4, (72 * t.width + 128) * 4 + 4)] }); thumbs.set(t.id, l); });
 
   const out = await client.startOutput({ video_kbps: 6000, audio_kbps: 160 });
-  check('output started on the hardware encoder', out.hardware === true, `${out.encoder} + ${out.audio_encoder}`);
+  if (out.hardware === true || !SOFTWARE_OK) {
+    check('output started on the hardware encoder', out.hardware === true, `${out.encoder} + ${out.audio_encoder}`);
+  } else {
+    mode = 'software-encoder';
+    check('output started on the software x264 fallback (CI runner without a hardware encoder)', out.encoder === 'obs_x264',
+      `${out.encoder} + ${out.audio_encoder}`);
+  }
   const tOut = Date.now();
   const at = (s) => sleep(Math.max(0, tOut + s * 1000 - Date.now()));
 
@@ -460,6 +519,32 @@ async function main() {
     const code = await new Promise((r) => { const t = setTimeout(() => { p.kill('SIGKILL'); r('timeout'); }, 5000); p.on('exit', (c) => { clearTimeout(t); r(c); }); });
     check('SIGTERM shuts the engine down cleanly', code === 0, `exit ${code}`);
   }
+
+  // 7. --no-video: the pipe protocol without a renderer (what a GPU-less runner can check).
+  await noVideoChecks();
+}
+
+/** Starts the engine with --no-video and checks ready, hello, refusals, stats and shutdown. */
+async function noVideoChecks() {
+  const c = new EngineClient({ executable: ENGINE, args: ['--no-video', '--log-level', 'warning'], restart: false, startTimeoutMs: 20000 });
+  let exit = null;
+  c.on('exit', (info) => { exit = info; });
+  const r = await c.start();
+  check('--no-video: ready without a renderer', r.event === 'ready' && r.protocol === 1 && r.video === null && r.renderer === 'none',
+    `libobs ${r.libobs}, aac ${r.encoders.aac.join(', ') || 'none'}, x264 ${r.encoders.x264}`);
+  const h = await c.hello();
+  check('--no-video: hello answers with capabilities', h.engine === 'skynat-engine' && h.protocol === 1 && h.video === null, `version ${h.version}`);
+  let refused = '';
+  try { await c.addSource({ id: 1, type: 'color', color: '#ff0000' }); } catch (e) { refused = e.message; }
+  check('--no-video: a video command is refused with the reason', /video is off/.test(refused), refused);
+  let unknown = '';
+  try { await c.command('no_such_command'); } catch (e) { unknown = e.message; }
+  check('--no-video: an unknown command is still "unknown"', /unknown command/.test(unknown), unknown);
+  const s = await c.stats();
+  check('--no-video: stats answer', typeof s.uptime_s === 'number' && s.sources === 0 && s.output.active === false, `uptime ${s.uptime_s} s`);
+  await c.stop();
+  check('--no-video: shutdown command exits the engine with code 0', !c.running && exit && exit.code === 0 && exit.expected,
+    exit ? `exit ${exit.code}${exit.signal ? ` (${exit.signal})` : ''}` : 'no exit seen');
 }
 
 function nalTypes(avcc) {
@@ -477,8 +562,11 @@ main().catch((e) => {
   check('test run', false, e.stack || e.message);
 }).finally(() => {
   const failed = results.filter((r) => !r.ok);
-  const summary = { when: new Date().toISOString(), engine: ENGINE, passed: results.filter((r) => r.ok && !r.note).length, failed: failed.length, results };
+  const summary = { when: new Date().toISOString(), engine: ENGINE, platform: `${process.platform}-${process.arch}`, ci: CI, mode,
+    passed: results.filter((r) => r.ok && !r.note).length, failed: failed.length, results };
   writeFileSync(join(OUT_DIR, 'last-run.json'), JSON.stringify(summary, null, 2));
-  console.log(`\n${summary.passed} passed, ${failed.length} failed`);
+  const modeText = { full: 'full run', 'software-encoder': 'full run on the software x264 fallback (CI runner without a hardware encoder)',
+    'no-gpu': 'NO GPU on this runner: video checks not run, pipe checked with --no-video' }[mode];
+  console.log(`\n${summary.passed} passed, ${failed.length} failed — ${modeText}`);
   process.exit(failed.length ? 1 : 0);
 });

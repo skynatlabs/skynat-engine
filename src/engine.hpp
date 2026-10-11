@@ -26,6 +26,9 @@ struct Options {
 	std::string config_dir;   // module config folder (nothing is written there today)
 	std::string renderer;     // "" = platform default: opengl (macOS), d3d11 (Windows)
 	std::string log_level = "info";
+	// false with --no-video: no renderer is started, only hello, list_devices,
+	// stats and shutdown work (checks the pipe on a computer without a GPU).
+	bool video = true;
 	uint32_t width = 1920;
 	uint32_t height = 1080;
 	uint32_t fps_num = 30;

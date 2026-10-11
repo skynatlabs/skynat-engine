@@ -91,6 +91,8 @@ void usage()
 		"  --fps <n|n/d>       frame rate (default 30)\n"
 		"  --renderer <name>   opengl (macOS default) | d3d11 (Windows default)\n"
 		"  --log-level <lvl>   error | warning | info (default) | debug\n"
+		"  --no-video          start without a renderer: only hello, list_devices, stats and\n"
+		"                      shutdown work (checks the pipe on a computer without a GPU)\n"
 		"  --version           print the version and exit\n",
 		kEngineVersion);
 }
@@ -169,6 +171,8 @@ int main(int argc, char **argv)
 			opt.renderer = next("--renderer");
 		} else if (a == "--log-level") {
 			opt.log_level = next("--log-level");
+		} else if (a == "--no-video") {
+			opt.video = false;
 		} else {
 			fprintf(stderr, "unknown argument: %s\n", a.c_str());
 			return 64;

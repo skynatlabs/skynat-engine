@@ -225,6 +225,10 @@ top of Program.
   the process if shutting down takes longer than 8 seconds.
 - Start-up failure (no graphics, libobs missing): `error` event with `fatal: true`, exit code 3.
   Bad arguments: exit code 64.
+- `--no-video` (diagnostics, never used by the app): the engine starts without a renderer, so it
+  also starts on a computer without a usable GPU. `ready` and `hello` then carry `"video": null`
+  and `"renderer": "none"`; `hello`, `list_devices`, `stats` and `shutdown` work, every other
+  command is refused with `video is off (the engine was started with --no-video)`.
 - After a crash or restart the engine starts empty: the app sends its sources and settings again
   when it sees the new `ready` event.
 
