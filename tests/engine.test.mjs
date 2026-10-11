@@ -36,6 +36,9 @@ const OUT_DIR = join(ROOT, 'tests', 'results');
 mkdirSync(OUT_DIR, { recursive: true });
 
 const CI = process.env.CI === 'true';
+// Every stderr line of the engine sessions; saved as tests/results/engine.log
+// (and its end printed when a check fails in CI).
+const engineLog = [];
 const SOFTWARE_OK = process.env.SKYNAT_ENGINE_TEST_SOFTWARE === '1' && CI;
 if (process.env.SKYNAT_ENGINE_TEST_SOFTWARE === '1' && !CI) {
   console.log('NOTE  SKYNAT_ENGINE_TEST_SOFTWARE is ignored outside CI: this run requires hardware H.264.\n');
@@ -123,7 +126,7 @@ async function main() {
   }
 
   // 2. Main session.
-  const log = [];
+  const log = engineLog;
   const client = new EngineClient({ executable: ENGINE, args: ['--log-level', 'info'], restart: false, startTimeoutMs: 20000, onLog: (l) => log.push(l) });
   const startEvents = [];
   const onStartEvent = (ev) => startEvents.push(ev);
@@ -137,7 +140,6 @@ async function main() {
   } catch (e) {
     for (let i = 0; i < 40 && !startExit; i++) await sleep(50);
     const fatal = startEvents.find((ev) => ev.event === 'error' && ev.fatal);
-    writeFileSync(join(OUT_DIR, 'engine.log'), log.join('\n'));
     // A runner without any usable GPU: the renderer cannot start (a missing
     // graphics module is a packaging fault, never accepted here).
     if (SOFTWARE_OK && fatal && /graphics not supported|obs_reset_video failed/.test(fatal.message)) {
@@ -157,6 +159,16 @@ async function main() {
   }
   client.off('event', onStartEvent);
   const readyMs = Date.now() - t0;
+  if (CI) {
+    // On runners: the engine's own figures once a second, into the saved log.
+    client.on('event', (ev) => {
+      if (ev.event === 'stats') {
+        log.push(`[stats] render ${Number(ev.render_ms).toFixed(1)} ms, rendered ${ev.frames_rendered}, lagged ${ev.frames_lagged}, skipped ${ev.frames_skipped}, cpu ${Number(ev.cpu_percent).toFixed(0)} %, output ${JSON.stringify(ev.output)}, feeds ${JSON.stringify(ev.feeds)}, pipe ${JSON.stringify(ev.pipe)}`);
+      } else if (ev.event !== 'result') {
+        log.push(`[event] ${JSON.stringify(ev)}`);
+      }
+    });
+  }
   check('ready event', ready.event === 'ready' && ready.protocol === 1 && ready.video.width === 1920 && ready.video.height === 1080,
     `${readyMs} ms, libobs ${ready.libobs}, renderer ${ready.renderer}`);
   const hw = ready.encoders.h264_hardware;
@@ -173,6 +185,7 @@ async function main() {
 
   const hello = await client.hello();
   check('hello answers with capabilities', hello.engine === 'skynat-engine' && hello.protocol === 1, `version ${hello.version}`);
+  if (CI) await client.stats(1000);
   const devices = await client.listDevices();
   note('cameras', `${devices.cameras.length} found, permission ${devices.camera_permission}: ${devices.cameras.map((c) => `${c.name}${c.best_format ? ` (${c.best_format.width}x${c.best_format.height}@${c.best_format.fps})` : ''}`).join(' | ')}`);
 
@@ -269,6 +282,13 @@ async function main() {
   await client.thumbnails({ on: false });
   clearInterval(pcmTimer);
   const finalStats = await client.stats();
+
+  if (video.length < 30 || audio.length < 30) {
+    // Without program packets nothing below can be measured: say what the engine saw and stop.
+    check('program packets arrived', false, `${video.length} video / ${audio.length} audio packets; at 9.5 s the engine reported ${JSON.stringify({
+      render_ms: st.render_ms, frames_rendered: st.frames_rendered, frames_lagged: st.frames_lagged, frames_skipped: st.frames_skipped, output: st.output })}; events: ${JSON.stringify(events.map((e) => e.ev).filter((e) => e.event !== 'stats').slice(0, 12))}`);
+    throw new Error('no program packets arrived (see the engine log)');
+  }
 
   // ---- program stream -------------------------------------------------------
   check('avcC received before video', vcfg && vcfg.avcC[0] === 1 && vcfg.width === 1920 && vcfg.height === 1080,
@@ -469,7 +489,6 @@ async function main() {
 
   await client.stop();
   check('shutdown command exits the engine', !client.running);
-  writeFileSync(join(OUT_DIR, 'engine.log'), log.join('\n'));
 
   // 3. The engine exits when its stdin closes (parent gone).
   {
@@ -565,6 +584,12 @@ main().catch((e) => {
   const summary = { when: new Date().toISOString(), engine: ENGINE, platform: `${process.platform}-${process.arch}`, ci: CI, mode,
     passed: results.filter((r) => r.ok && !r.note).length, failed: failed.length, results };
   writeFileSync(join(OUT_DIR, 'last-run.json'), JSON.stringify(summary, null, 2));
+  writeFileSync(join(OUT_DIR, 'engine.log'), engineLog.join('\n'));
+  if (failed.length && CI) {
+    console.log(`\n---- the engine's log, last ${Math.min(120, engineLog.length)} of ${engineLog.length} lines ----`);
+    console.log(engineLog.slice(-120).join('\n'));
+    console.log('---- end of the engine log ----');
+  }
   const modeText = { full: 'full run', 'software-encoder': 'full run on the software x264 fallback (CI runner without a hardware encoder)',
     'no-gpu': 'NO GPU on this runner: video checks not run, pipe checked with --no-video' }[mode];
   console.log(`\n${summary.passed} passed, ${failed.length} failed — ${modeText}`);

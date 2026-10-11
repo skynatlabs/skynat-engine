@@ -232,20 +232,31 @@ if ($Smoke) {
     return , $buf
   }
 
+  # The first message that matters is "ready" (or a start-up "error"); warnings the engine
+  # forwards as "log" events may come before it and are only shown.
+  $deadline = [DateTime]::UtcNow.AddSeconds(60)
+  $json = $null
+  $type = 0
   try {
-    $header = Read-Exactly $stdout 5 60000
-    $length = [BitConverter]::ToUInt32($header, 0)
-    if ($length -gt 1MB) { throw "first message claims $length bytes" }
-    $body = Read-Exactly $stdout ([int]$length) 10000
+    while (-not $json) {
+      $left = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+      $header = Read-Exactly $stdout 5 $left
+      $length = [BitConverter]::ToUInt32($header, 0)
+      if ($length -gt 1MB) { throw "a message claims $length bytes" }
+      $body = if ($length -gt 0) { Read-Exactly $stdout ([int]$length) 10000 } else { , ([byte[]]::new(0)) }
+      $type = $header[4]
+      $text = [System.Text.Encoding]::UTF8.GetString($body)
+      if ($type -eq 2 -and $text -match '"event":"log"') { Write-Host "log event: $text"; continue }
+      $json = $text
+    }
   } catch {
     if (-not $proc.HasExited) { $proc.Kill() }
-    throw "smoke test: no first message from the engine ($($_.Exception.Message)); exit code $(if ($proc.HasExited) { $proc.ExitCode } else { 'n/a' })"
+    throw "smoke test: no ready/error message from the engine ($($_.Exception.Message)); exit code $(if ($proc.HasExited) { $proc.ExitCode } else { 'n/a' })"
   }
-  $json = [System.Text.Encoding]::UTF8.GetString($body)
   Write-Host $json
   try { $proc.StandardInput.Close() } catch { }   # the engine exits when its stdin closes
   if (-not $proc.WaitForExit(10000)) { $proc.Kill(); throw 'engine did not exit after stdin closed' }
-  if ($header[4] -ne 2 -or $json -notmatch '"event":"(ready|error)"') { throw 'unexpected first message' }
+  if ($type -ne 2 -or $json -notmatch '"event":"(ready|error)"') { throw "unexpected message (type $type): $json" }
   if ($json -match '"event":"error"') {
     Write-Warning "the engine could not start its renderer here (no usable GPU on this computer?) — exit code $($proc.ExitCode)"
     if ($proc.ExitCode -ne 3) { throw "a start-up error must end with exit code 3, got $($proc.ExitCode)" }
