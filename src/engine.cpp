@@ -496,17 +496,34 @@ bool Engine::any_output_active()
 	       (feed_preview_.output && obs_output_active(feed_preview_.output));
 }
 
-void Engine::fit_to_canvas(obs_sceneitem_t *item)
+// Fitted inside the canvas (letterboxed), turned first when the file says so
+// (a phone's portrait video is stored on its side with a rotation to show it
+// upright): turned about its centre, the bounds swapped for a quarter turn.
+void Engine::fit_to_canvas(obs_sceneitem_t *item, int rotate)
 {
+	const bool quarter = rotate == 90 || rotate == 270;
 	struct vec2 bounds;
-	vec2_set(&bounds, (float)opt_.width, (float)opt_.height);
+	vec2_set(&bounds, (float)(quarter ? opt_.height : opt_.width), (float)(quarter ? opt_.width : opt_.height));
 	struct vec2 pos;
-	vec2_set(&pos, 0.0f, 0.0f);
-	obs_sceneitem_set_alignment(item, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
+	if (rotate) {
+		vec2_set(&pos, (float)opt_.width * 0.5f, (float)opt_.height * 0.5f);
+		obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
+	} else {
+		vec2_set(&pos, 0.0f, 0.0f);
+		obs_sceneitem_set_alignment(item, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
+	}
+	obs_sceneitem_set_rot(item, (float)rotate);
 	obs_sceneitem_set_pos(item, &pos);
 	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
 	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
 	obs_sceneitem_set_bounds(item, &bounds);
+}
+
+// 0, 90, 180 or 270 from a command's "rotate" (degrees clockwise), else 0.
+static int rotation_of(obs_data_t *cmd)
+{
+	const int64_t r = ((get_int(cmd, "rotate", 0) % 360) + 360) % 360;
+	return (r == 90 || r == 180 || r == 270) ? (int)r : 0;
 }
 
 // How each camera and clip is scaled to the canvas, from its own size (known
@@ -572,7 +589,7 @@ std::string Engine::cmd_configure(obs_data_t *cmd)
 	obs_transition_set_size(transition_, w, h);
 	for (auto &kv : sources_) {
 		if (kv.second.wrapper_item)
-			fit_to_canvas(kv.second.wrapper_item);
+			fit_to_canvas(kv.second.wrapper_item, kv.second.rotate);
 		if (kv.second.type == "color") {
 			obs_data_t *s = obs_data_create();
 			obs_data_set_int(s, "width", w);
@@ -801,7 +818,8 @@ std::string Engine::cmd_add_source(obs_data_t *cmd)
 	if (is_input_type(type)) {
 		s.wrapper = obs_scene_create_private(("in-" + std::to_string(id)).c_str());
 		s.wrapper_item = obs_scene_add(s.wrapper, s.source);
-		fit_to_canvas(s.wrapper_item);
+		s.rotate = rotation_of(cmd);
+		fit_to_canvas(s.wrapper_item, s.rotate);
 		thumbs_->add(id, obs_scene_get_source(s.wrapper));
 		if (type == "camera" && !get_bool(cmd, "audio", false))
 			obs_source_set_muted(s.source, true); // the app's mixer owns sound
@@ -904,6 +922,10 @@ std::string Engine::cmd_update_source(obs_data_t *cmd)
 		}
 		if (has(cmd, "hdr"))
 			set_signal_as_is(s.source, get_str(cmd, "hdr") == "as_is");
+		if (has(cmd, "rotate") && s.wrapper_item) {
+			s.rotate = rotation_of(cmd);
+			fit_to_canvas(s.wrapper_item, s.rotate);
+		}
 	} else if (s.type == "image") {
 		if (has(cmd, "path")) {
 			std::string path = get_str(cmd, "path");

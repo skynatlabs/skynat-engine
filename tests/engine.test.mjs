@@ -733,6 +733,22 @@ async function main() {
   check('…hdr "as_is": the coded signal as it is (191 ± 4)', asIs.length === 3 && asIs.every((v) => Math.abs(v - 191) <= 4), asIs.join(','));
   check('…and converted again when it is taken off', back.length === 3 && Math.abs(back[1] - converted[1]) <= 3, back.join(','));
 
+  // A clip turned a quarter clockwise (a phone's portrait video): red on the left goes to the top.
+  const sideways = join(OUT_DIR, 'sideways.mp4');
+  if (!existsSync(sideways)) ffmpeg(['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=red:s=160x180:r=30', '-f', 'lavfi', '-i', 'color=c=blue:s=160x180:r=30',
+    '-filter_complex', '[0:v][1:v]hstack,format=yuv420p', '-t', '2', '-c:v', 'libx264', sideways]);
+  let turned = null;
+  const onTurn = (t) => { if (t.id === 8 && t.format === 'rgba') { const at = (x, y) => [...t.data.subarray((y * t.width + x) * 4, (y * t.width + x) * 4 + 3)]; turned = { top: at(128, 30), bottom: at(128, 114), side: at(20, 72) }; } };
+  client.on('thumbnail', onTurn);
+  await client.addSource({ id: 8, type: 'media', path: sideways, loop: true, rotate: 90 });
+  await client.thumbnails({ on: true, width: 256, height: 144, fps: 10 });
+  await sleep(1500);
+  client.off('thumbnail', onTurn);
+  await client.thumbnails({ on: false });
+  await client.removeSource(8);
+  const red8 = (p) => p && p[0] > 180 && p[2] < 80, blue8 = (p) => p && p[2] > 180 && p[0] < 80, black8 = (p) => p && p[0] < 30 && p[1] < 30 && p[2] < 30;
+  check('rotate 90: turned clockwise and fitted (red on top, blue below, black at the sides)', !!turned && red8(turned.top) && blue8(turned.bottom) && black8(turned.side), JSON.stringify(turned));
+
   // Change the canvas (outputs stopped), encode a moment at 60 fps on another size, and back
   // (1280x720; a third of the canvas on a CPU-rendered runner).
   const alt = softwareRenderer ? { w: (W / 3) & ~1, h: (H / 3) & ~1 } : { w: 1280, h: 720 };

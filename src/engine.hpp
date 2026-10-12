@@ -62,6 +62,7 @@ private:
 		obs_sceneitem_t *overlay_item = nullptr; // overlays: item in the overlay scene
 		uint32_t audio_channel = 0;             // pcm: output channel
 		bool fast_camera = false;
+		int rotate = 0;                         // inputs: turned clockwise (0, 90, 180, 270) before fitting
 	};
 
 	struct Feed {
@@ -93,7 +94,7 @@ private:
 
 	// helpers
 	bool reset_video(uint32_t w, uint32_t h, uint32_t fps_num, uint32_t fps_den, std::string *error);
-	void fit_to_canvas(obs_sceneitem_t *item);
+	void fit_to_canvas(obs_sceneitem_t *item, int rotate = 0);
 	void update_scale_filters();
 	obs_data_t *camera_settings(obs_data_t *cmd, const std::string &device, bool *fast, std::string *error);
 	bool apply_common(Source &s, obs_data_t *cmd);

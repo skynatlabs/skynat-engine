@@ -108,6 +108,9 @@ export interface AddSource {
   path?: string; loop?: boolean; hw_decode?: boolean; restart_on_activate?: boolean;
   /** media: 'as_is' passes an HLG or PQ clip's coded signal unchanged (for an app-supplied LUT); 'convert' (default): libobs converts it. */
   hdr?: 'as_is' | 'convert';
+  /** camera / media: turned clockwise (0, 90, 180, 270) before it is fitted to the canvas — a
+   *  phone's portrait video is stored on its side, with a rotation to show it upright. */
+  rotate?: number;
   // color
   color?: string;
   // overlay (also width/height)
