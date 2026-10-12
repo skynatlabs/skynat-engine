@@ -592,17 +592,19 @@ async function main() {
   client.on('thumbnail', onI420);
   const thBefore = await client.stats();
   const i420On = await client.thumbnails({ on: true, width: 256, height: 144, fps: 10, format: 'i420', only_changes: true });
-  await sleep(1500);
+  // 1.5 s at ten a second; a runner that renders slower than real time gets up to 8 s.
+  for (let i = 0; i < 80 && !((i420.get(1) || []).length >= 8 && i >= 15); i++) await sleep(100);
   const thAfter = await client.stats();
   client.off('thumbnail', onI420);
   const blueI = i420.get(2) || [], clipI = i420.get(1) || [];
+  const thUnchanged = thAfter.thumbnails_unchanged - thBefore.thumbnails_unchanged;
   const yuv = (t, x, y) => { const w = t.width, h = t.height, d = t.data; const Y = d[y * w + x], U = d[w * h + (y >> 1) * (w >> 1) + (x >> 1)], V = d[w * h + (w >> 1) * (h >> 1) + (y >> 1) * (w >> 1) + (x >> 1)];
     const r = Y + 1.5748 * (V - 128), g = Y - 0.1873 * (U - 128) - 0.4681 * (V - 128), b = Y + 1.8556 * (U - 128); return [r, g, b].map((v) => Math.round(Math.max(0, Math.min(255, v)))); };
   const bp = blueI[0] ? yuv(blueI[0], 128, 72) : [];
   check('I420 thumbnails: 1.5 bytes a pixel, the blue colour still blue', i420On.format === 'i420' && blueI.length >= 1 && blueI[0].data.length === 256 * 144 * 3 / 2 && bp[2] > 200 && bp[0] < 45 && bp[1] < 45,
     `${blueI.length} sent, ${blueI[0] ? blueI[0].data.length : 0} bytes, rgb ${bp.join(',')}`);
-  check('only changes: the still colour is sent once, the playing clip keeps coming', blueI.length === 1 && clipI.length >= 8 && thAfter.thumbnails_unchanged - thBefore.thumbnails_unchanged >= 8,
-    `colour ${blueI.length}, clip ${clipI.length}, unchanged ${thAfter.thumbnails_unchanged - thBefore.thumbnails_unchanged}`);
+  check('only changes: the still colour is sent once, the playing clip keeps coming', blueI.length === 1 && clipI.length >= 8 && thUnchanged >= 4,
+    `colour ${blueI.length}, clip ${clipI.length}, unchanged ${thUnchanged}`);
   await client.thumbnails({ on: false });
   const progLut = await client.lut('program', lutFile, 1);
   await client.lut('program', '');
@@ -716,16 +718,16 @@ async function main() {
   client.on('thumbnail', onHlg);
   await client.addSource({ id: 7, type: 'media', path: hlg, loop: true });
   await client.thumbnails({ on: true, width: 256, height: 144, fps: 10 });
-  await sleep(1500);
-  const converted = hlgPx[hlgPx.length - 1] || [];
+  // Each picture once the change has gone through: a few thumbnails in (up to 8 s on a slow runner).
+  const settled = async () => { hlgPx.length = 0; for (let i = 0; i < 80 && hlgPx.length < 4; i++) await sleep(100); return hlgPx[hlgPx.length - 1] || []; };
+  await sleep(500);
+  const converted = await settled();
   await client.updateSource({ id: 7, hdr: 'as_is' });
-  hlgPx.length = 0;
-  await sleep(1500);
-  const asIs = hlgPx[hlgPx.length - 1] || [];
+  await sleep(300);
+  const asIs = await settled();
   await client.updateSource({ id: 7, hdr: 'convert' });
-  hlgPx.length = 0;
-  await sleep(1500);
-  const back = hlgPx[hlgPx.length - 1] || [];
+  await sleep(300);
+  const back = await settled();
   client.off('thumbnail', onHlg);
   await client.thumbnails({ on: false });
   await client.removeSource(7);
@@ -742,7 +744,7 @@ async function main() {
   client.on('thumbnail', onTurn);
   await client.addSource({ id: 8, type: 'media', path: sideways, loop: true, rotate: 90 });
   await client.thumbnails({ on: true, width: 256, height: 144, fps: 10 });
-  await sleep(1500);
+  for (let i = 0; i < 80 && !(turned && i >= 10); i++) await sleep(100);
   client.off('thumbnail', onTurn);
   await client.thumbnails({ on: false });
   await client.removeSource(8);

@@ -13,7 +13,7 @@
 namespace skynat {
 
 constexpr uint32_t kProtocolVersion = 1;
-constexpr const char *kEngineVersion = "0.1.0";
+constexpr const char *kEngineVersion = "0.2.0";
 
 // Every message on both pipes: [u32 LE payload length][u8 type][payload].
 constexpr size_t kHeaderSize = 5;

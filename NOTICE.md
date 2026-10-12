@@ -72,3 +72,7 @@ built the engine — so the engine runs on a PC without the VC++ redistributable
 - 2026-10-11 — published as https://github.com/skynatlabs/skynat-engine; the release builds
   (Apple Silicon, Intel Mac, Windows x64) are made and tested by GitHub Actions
   (`.github/workflows/build.yml`) from the tagged source. OBS still unmodified; no patches.
+- 2026-10-12 — engine 0.2.0 against OBS 31.0.4: generic commands built on libobs's public API
+  (Program feed scaling, projectors onto a display, the `lut` command with libobs's Apply LUT
+  filter, a media file's HDR signal as coded, rotation, a second encode for the stream, scale
+  filters, I420 thumbnails). OBS still unmodified; no patches.
