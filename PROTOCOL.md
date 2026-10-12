@@ -270,3 +270,15 @@ and the **main thread** (macOS run loop / Windows message loop), where commands 
 its graphics thread, one video-output thread per mix, the audio thread, the hotkey thread and a
 task thread; the media source, AVFoundation, VideoToolbox and CoreAudio add their own system
 threads. Measured counts are in the test report.
+
+### Glass backdrop and the clean feed (0.3.0)
+
+| cmd | arguments | result `data` |
+|---|---|---|
+| `glass` | `rects: [{x, y, w, h, r}]` (canvas pixels, corner radius `r`; at most six; `[]` = off), `blur` (18 px), `saturate` (1.4), `brightness` (1.0) | `{rects, blur}` — Program behind those rectangles is blurred (a 24-tap disc), a backdrop for glass panels the client draws on the graphics layer above it. Program goes out through a scene holding the transition with this filter on it, so the clean feed (below) has no glass. |
+
+`start_output` also takes `clean: {kbps}`: Program **without the graphics layer** (and without the
+glass backdrop), at the canvas size, encoded like Program (same encoder, tuning and keyframe
+interval), sent as feed 3 (`FEED_CLEAN`) and never dropped — for a clean recording beside the main
+one. Answered in `clean` (`{width, height, kbps, encoder}` or `{error}`); stopped with the output.
+

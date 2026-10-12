@@ -13,7 +13,7 @@
 namespace skynat {
 
 constexpr uint32_t kProtocolVersion = 1;
-constexpr const char *kEngineVersion = "0.2.0";
+constexpr const char *kEngineVersion = "0.3.0";
 
 // Every message on both pipes: [u32 LE payload length][u8 type][payload].
 constexpr size_t kHeaderSize = 5;
@@ -37,6 +37,7 @@ enum FeedId : uint8_t {
 	FEED_PROGRAM = 0, // the Program monitor (scaled copy of the output)
 	FEED_PREVIEW = 1, // the Preview monitor (studio mode)
 	FEED_STREAM = 2,  // the stream's own picture (start_output "stream"): a broadcast, never dropped
+	FEED_CLEAN = 3,   // Program without the graphics layer (start_output "clean"): a recording, never dropped
 };
 
 // Overlay message flags (u32 at offset 24 of the overlay header).

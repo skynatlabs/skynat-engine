@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "engine.hpp"
+#include "glass.hpp"
 #include "json.hpp"
 #include "output.hpp"
 #include "platform.hpp"
@@ -246,7 +247,18 @@ bool Engine::startup(std::string *error)
 			return false;
 		}
 		obs_transition_set_size(transition_, opt_.width, opt_.height);
-		obs_set_output_source(0, transition_);
+		// Program goes out through a scene holding the transition, which
+		// carries the glass backdrop filter — so the clean copy (the
+		// transition alone) has neither the graphics nor the glass under them.
+		register_glass_filter();
+		program_glass_ = obs_scene_create_private("program-glass");
+		obs_scene_add(program_glass_, transition_);
+		glass_filter_ = obs_source_create_private("skynat_glass_filter", "glass", nullptr);
+		if (glass_filter_)
+			obs_source_filter_add(obs_scene_get_source(program_glass_), glass_filter_);
+		else
+			blog(LOG_WARNING, "[skynat-engine] the glass filter could not be made; glass panels stay unblurred");
+		obs_set_output_source(0, obs_scene_get_source(program_glass_));
 
 		overlay_scene_ = obs_scene_create_private("overlays");
 		obs_set_output_source(1, obs_scene_get_source(overlay_scene_));
@@ -437,6 +449,7 @@ void Engine::handle_command(const std::string &json)
 		{"overlay_visible", &Engine::cmd_overlay_visible, true},
 		{"media", &Engine::cmd_media, true},
 		{"lut", &Engine::cmd_lut, true},
+		{"glass", &Engine::cmd_glass, true},
 		{"start_output", &Engine::cmd_start_output, true},
 		{"stop_output", &Engine::cmd_stop_output, true},
 		{"set_bitrate", &Engine::cmd_set_bitrate, true},
@@ -1127,6 +1140,46 @@ std::string Engine::cmd_overlay_visible(obs_data_t *cmd)
 // (clut_filter: a .cube or PNG look-up table) on a source, or on Program under
 // the overlays. An empty path takes it off. The table is the app's: the
 // engine only applies the file it is given.
+// glass {rects: [{x, y, w, h, r}], blur (18), saturate (1.4), brightness (1.0)}:
+// the part of Program behind each panel of the graphics layer, blurred — a
+// backdrop for glass panels the client draws above it. Canvas pixels, at most
+// six rectangles; an empty list switches it off.
+std::string Engine::cmd_glass(obs_data_t *cmd)
+{
+	if (!glass_filter_)
+		throw CommandError("the glass filter is not available");
+	std::vector<GlassRect> rects;
+	obs_data_array_t *arr = obs_data_get_array(cmd, "rects");
+	const size_t n = arr ? obs_data_array_count(arr) : 0;
+	for (size_t i = 0; i < n && rects.size() < kMaxGlassRects; i++) {
+		obs_data_t *r = obs_data_array_item(arr, i);
+		GlassRect g{(float)get_double(r, "x", 0), (float)get_double(r, "y", 0), (float)get_double(r, "w", 0),
+			    (float)get_double(r, "h", 0), (float)get_double(r, "r", 0)};
+		obs_data_release(r);
+		if (g.w >= 2 && g.h >= 2)
+			rects.push_back(g);
+	}
+	if (arr)
+		obs_data_array_release(arr);
+	const float blur = (float)std::clamp(get_double(cmd, "blur", 18.0), 0.0, 80.0);
+	const float sat = (float)std::clamp(get_double(cmd, "saturate", 1.4), 0.0, 3.0);
+	const float bright = (float)std::clamp(get_double(cmd, "brightness", 1.0), 0.2, 2.0);
+	set_glass(glass_filter_, rects, blur, sat, bright);
+	return JsonObj().integer("rects", (int64_t)rects.size()).number("blur", blur).dump();
+}
+
+void Engine::stop_clean_feed()
+{
+	stop_feed(feed_clean_);
+	if (clean_view_) {
+		if (clean_video_)
+			obs_view_remove(clean_view_);
+		obs_view_destroy(clean_view_);
+	}
+	clean_view_ = nullptr;
+	clean_video_ = nullptr;
+}
+
 std::string Engine::cmd_lut(obs_data_t *cmd)
 {
 	obs_source_t *target = nullptr;
@@ -1315,6 +1368,7 @@ static void wait_inactive(obs_output_t *out, int timeout_ms)
 void Engine::stop_program_output(PipeOutputStats *final_stats)
 {
 	stop_feed(feed_stream_);
+	stop_clean_feed();
 	stream_kbps_ = 0;
 	if (output_) {
 		obs_output_stop(output_);
@@ -1421,6 +1475,45 @@ std::string Engine::cmd_start_output(obs_data_t *cmd)
 			stream_json.str("error", "the stream's size must be at least 64x64 and no larger than the canvas");
 		}
 	}
+	// "clean": {kbps} — Program without the graphics layer (and without the
+	// glass backdrop under it), at the canvas size, encoded as Program is, sent
+	// as FEED_CLEAN for a clean recording beside the main one.
+	JsonObj clean_json;
+	if (has(cmd, "clean")) {
+		std::unique_ptr<obs_data_t, void (*)(obs_data_t *)> cl(obs_data_get_obj(cmd, "clean"), obs_data_release);
+		const uint32_t ckbps = (uint32_t)std::clamp<int64_t>(get_int(cl.get(), "kbps", kbps), 500, 100000);
+		std::string cid, cerr;
+		struct obs_video_info ovi;
+		if (obs_get_video_info(&ovi)) {
+			clean_view_ = obs_view_create();
+			obs_view_set_source(clean_view_, 0, transition_);
+			clean_video_ = obs_view_add2(clean_view_, &ovi);
+		}
+		if (clean_video_)
+			feed_clean_.encoder = create_video_encoder("clean-h264", venc_id_, ckbps, keyint, "high", tuning.get(), &cid, &cerr);
+		else
+			cerr = "could not make the clean video mix";
+		if (feed_clean_.encoder) {
+			obs_encoder_set_video(feed_clean_.encoder, clean_video_);
+			obs_data_t *fc = obs_data_create();
+			obs_data_set_int(fc, "feed", FEED_CLEAN);
+			feed_clean_.output = obs_output_create("skynat_feed_output", "clean", fc, nullptr);
+			obs_data_release(fc);
+			obs_output_set_video_encoder(feed_clean_.output, feed_clean_.encoder);
+			signal_handler_connect(obs_output_get_signal_handler(feed_clean_.output), "stop", output_stopped, this);
+			if (!obs_output_start(feed_clean_.output)) {
+				const char *e = obs_output_get_last_error(feed_clean_.output);
+				cerr = std::string("the clean copy's encoder did not start") + (e ? std::string(": ") + e : "");
+			}
+		}
+		if (feed_clean_.output && obs_output_active(feed_clean_.output)) {
+			clean_json.integer("width", ovi.base_width).integer("height", ovi.base_height).integer("kbps", ckbps).str("encoder", cid);
+		} else {
+			stop_clean_feed();
+			blog(LOG_WARNING, "[skynat-engine] %s — no clean copy", cerr.c_str());
+			clean_json.str("error", cerr.empty() ? std::string("the clean copy could not start") : cerr);
+		}
+	}
 	writer_.event(JsonObj().str("event", "output").str("name", "program").str("state", "started").dump());
 	// The settings the encoder was opened with (the app's, over the defaults).
 	obs_data_t *applied = obs_encoder_get_settings(venc_);
@@ -1435,6 +1528,7 @@ std::string Engine::cmd_start_output(obs_data_t *cmd)
 		.integer("audio_kbps", akbps)
 		.integer("keyint_sec", keyint)
 		.raw("stream", has(cmd, "stream") ? stream_json.dump() : std::string("null"))
+		.raw("clean", has(cmd, "clean") ? clean_json.dump() : std::string("null"))
 		.dump();
 }
 
@@ -1823,6 +1917,16 @@ void Engine::shutdown(const std::string &reason)
 		for (auto &kv : sources_)
 			remove_source_internal(kv.second);
 		sources_.clear();
+		stop_clean_feed();
+		if (glass_filter_) {
+			if (program_glass_)
+				obs_source_filter_remove(obs_scene_get_source(program_glass_), glass_filter_);
+			obs_source_release(glass_filter_);
+		}
+		glass_filter_ = nullptr;
+		if (program_glass_)
+			obs_scene_release(program_glass_);
+		program_glass_ = nullptr;
 		if (transition_)
 			obs_source_release(transition_);
 		transition_ = nullptr;

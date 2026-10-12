@@ -59,7 +59,7 @@ export const MsgType = {
 
 export const Feed = { PROGRAM: 0, PREVIEW: 1 } as const;
 /** 0 the Program monitor, 1 the Preview monitor, 2 the stream's own picture (start_output "stream"). */
-export type FeedId = 0 | 1 | 2;
+export type FeedId = 0 | 1 | 2 | 3;
 
 export const OVERLAY_CLEAR = 1;
 
@@ -593,10 +593,13 @@ export class EngineClient {
   /** libobs's Apply LUT filter on a source, or on Program (`'program'`); an empty path takes it off. */
   lut(target: number | 'program', path: string, amount = 1) { return this.command('lut', target === 'program' ? { target, path, amount } : { id: target, path, amount }); }
   /** `stream`: the stream's own smaller picture beside Program's — a second encoder of the same
-   *  kind, scaled, whose packets come as feed 2 (FeedId.STREAM). */
-  startOutput(a: { video_kbps?: number; audio_kbps?: number; keyint_sec?: number; encoder?: 'auto' | 'hardware' | 'x264' | string; encoder_settings?: Record<string, Record<string, unknown>>; stream?: { width: number; height: number; kbps: number } } = {}) {
-    return this.command<{ encoder: string; settings: Record<string, unknown>; hardware: boolean; audio_encoder: string; video_kbps: number; stream?: { width?: number; height?: number; kbps?: number; encoder?: string; error?: string } | null }>('start_output', a);
+   *  kind, scaled, whose packets come as feed 2 (FeedId.STREAM). `clean`: Program without the
+   *  graphics layer, at the canvas size, as feed 3 — for a clean recording. */
+  startOutput(a: { video_kbps?: number; audio_kbps?: number; keyint_sec?: number; encoder?: 'auto' | 'hardware' | 'x264' | string; encoder_settings?: Record<string, Record<string, unknown>>; stream?: { width: number; height: number; kbps: number }; clean?: { kbps: number } } = {}) {
+    return this.command<{ encoder: string; settings: Record<string, unknown>; hardware: boolean; audio_encoder: string; video_kbps: number; stream?: { width?: number; height?: number; kbps?: number; encoder?: string; error?: string } | null; clean?: { width?: number; height?: number; kbps?: number; encoder?: string; error?: string } | null }>('start_output', a);
   }
+  /** The picture behind glass panels on the graphics layer, blurred (canvas px; at most six; [] = off). */
+  glass(rects: { x: number; y: number; w: number; h: number; r: number }[], opts: { blur?: number; saturate?: number; brightness?: number } = {}) { return this.command('glass', { rects, ...opts }); }
   stopOutput() { return this.command('stop_output', {}, 15000); }
   /** Program's bitrate, or (target 'stream') the stream's own picture's. */
   setBitrate(kbps: number, target: 'program' | 'stream' = 'program') { return this.command('set_bitrate', target === 'stream' ? { kbps, target } : { kbps }); }

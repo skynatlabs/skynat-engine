@@ -185,7 +185,7 @@ void pipe_packet(void *data, struct encoder_packet *packet)
 			f.u8(o->feed_id);
 		f.i64(pts).i64(dts).u8(packet->keyframe ? 1 : 0).bytes(avc.data, avc.size);
 		// Monitor feeds give way first; Program and the stream's own picture are the broadcast.
-		bool sent = g_writer->send(f.finish(), o->feed && o->feed_id != FEED_STREAM ? Writer::BULK : Writer::MEDIA);
+		bool sent = g_writer->send(f.finish(), o->feed && o->feed_id != FEED_STREAM && o->feed_id != FEED_CLEAN ? Writer::BULK : Writer::MEDIA);
 		obs_encoder_packet_release(&avc);
 
 		if (sent) {

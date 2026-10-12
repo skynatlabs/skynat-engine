@@ -88,6 +88,8 @@ private:
 	std::string cmd_overlay_visible(obs_data_t *cmd);
 	std::string cmd_media(obs_data_t *cmd);
 	std::string cmd_lut(obs_data_t *cmd);
+	std::string cmd_glass(obs_data_t *cmd);
+	void stop_clean_feed();
 	std::string cmd_start_output(obs_data_t *cmd);
 	std::string cmd_stop_output(obs_data_t *cmd);
 	std::string cmd_set_bitrate(obs_data_t *cmd);
@@ -126,7 +128,11 @@ private:
 	std::mutex pcm_mutex_; // the reader thread looks PCM sources up directly
 	std::map<uint32_t, obs_source_t *> pcm_sources_;
 
-	obs_source_t *transition_ = nullptr; // program (output channel 0)
+	obs_source_t *transition_ = nullptr; // program (inside program_glass_ on output channel 0)
+	obs_scene_t *program_glass_ = nullptr; // channel 0: the transition, with the glass backdrop filter on it
+	obs_source_t *glass_filter_ = nullptr;
+	obs_view_t *clean_view_ = nullptr;     // the transition alone: no graphics, no glass (the clean copy)
+	video_t *clean_video_ = nullptr;
 	obs_scene_t *overlay_scene_ = nullptr; // overlays on top of program (channel 1)
 	obs_view_t *preview_view_ = nullptr;  // studio-mode preview
 	video_t *preview_video_ = nullptr;
@@ -143,6 +149,7 @@ private:
 	Feed feed_program_;
 	Feed feed_preview_;
 	Feed feed_stream_;   // the stream's own smaller picture, beside Program's (start_output "stream")
+	Feed feed_clean_;    // Program without the graphics layer, for a clean recording (start_output "clean")
 	uint32_t stream_kbps_ = 0;
 	std::string feed_params_;
 	std::unique_ptr<Thumbnails> thumbs_;

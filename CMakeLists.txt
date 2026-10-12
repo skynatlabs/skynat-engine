@@ -6,7 +6,7 @@
 #   cmake -S . -B build -Dlibobs_DIR=<obs-studio>/build_<platform>/libobs
 cmake_minimum_required(VERSION 3.22)
 
-project(skynat-engine VERSION 0.2.0 LANGUAGES C CXX)
+project(skynat-engine VERSION 0.3.0 LANGUAGES C CXX)
 if(APPLE)
   enable_language(OBJCXX)
 endif()
@@ -22,6 +22,8 @@ add_executable(
   src/main.cpp
   src/engine.cpp
   src/engine.hpp
+  src/glass.cpp
+  src/glass.hpp
   src/io.cpp
   src/io.hpp
   src/json.hpp
