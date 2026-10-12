@@ -1352,7 +1352,7 @@ std::string Engine::cmd_start_output(obs_data_t *cmd)
 				stream_json.str("error", serr);
 			}
 		} else {
-			stream_json.str("error", "the stream's size must be smaller than the canvas");
+			stream_json.str("error", "the stream's size must be at least 64x64 and no larger than the canvas");
 		}
 	}
 	writer_.event(JsonObj().str("event", "output").str("name", "program").str("state", "started").dump());

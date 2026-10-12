@@ -695,8 +695,10 @@ async function main() {
   check('a missing media file is an error result', /file not found/.test(missing), missing);
 
   // A one-second clip that does not loop ends with a "media" event.
-  const short = join(OUT_DIR, 'clip-1s.mp4');
-  if (!existsSync(short)) ffmpeg(['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30', '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', short]);
+  // Smaller than the canvas (it is enlarged — checked below), also on a runner's small canvas.
+  const shortW = Math.min(640, (W / 2) & ~1), shortH = Math.min(360, (H / 2) & ~1);
+  const short = join(OUT_DIR, `clip-1s-${shortW}x${shortH}.mp4`);
+  if (!existsSync(short)) ffmpeg(['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=size=${shortW}x${shortH}:rate=30`, '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', short]);
   const endedAt = Date.now();
   await client.addSource({ id: 6, type: 'media', path: short, loop: false });
   await client.setProgram(6, 'cut');
@@ -786,7 +788,9 @@ async function main() {
   let sCfg = null, sPkts = 0;
   const onSCfg = (c) => { if (c.feed === 2) sCfg = c; }, onSPkt = (p) => { if (p.feed === 2) sPkts++; };
   client.on('feedConfig', onSCfg); client.on('feedPacket', onSPkt);
-  const sw = (Math.round(alt.w / 3) & ~1), sh = (Math.round(alt.h / 3) & ~1);
+  // A third of the canvas; on a runner's small canvas three quarters (the engine wants at least 64x64).
+  const sk = softwareRenderer ? 0.75 : 1 / 3;
+  const sw = Math.max(64, Math.round(alt.w * sk) & ~1), sh = Math.max(64, Math.round(alt.h * sk) & ~1);
   const withStream = await client.startOutput({ video_kbps: 3000, stream: { width: sw, height: sh, kbps: 800 } });
   const streamUntil = Date.now() + (excusedRealtime ? 10000 : 2000);
   while (Date.now() < streamUntil && !(sPkts > 30)) await sleep(20);
