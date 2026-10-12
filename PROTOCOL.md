@@ -129,7 +129,7 @@ starts a new timeline. Any block size works; 1024 frames (21.3 ms) is typical.
 Same as types 3 and 4 with one extra byte in front:
 
 ```
-0   u8   feed: 0 = Program monitor, 1 = Preview monitor (studio mode)
+0   u8   feed: 0 = Program monitor, 1 = Preview monitor (studio mode), 2 = the stream's own picture (start_output "stream")
 1   …    type 3 / type 4 payload
 ```
 
@@ -189,9 +189,9 @@ own unsigned 32-bit numbers.
 | `overlay_visible` | `id`, `visible` | `{id, visible}` |
 | `media` | `id`, `action`: `play` / `pause` / `restart` / `stop` | `{id, action}` |
 | `lut` | `id` (a source) or `target: "program"` (Program, under the overlays), `path` (a `.cube` or PNG look-up table; empty: take it off), `amount` (0–1, default 1) | `{target, on, amount}` — libobs's own "Apply LUT" filter (`clut_filter`); the table is the app's |
-| `start_output` | `video_kbps` (default 6000), `audio_kbps` (160), `keyint_sec` (2), `encoder`: `auto` (hardware, else x264) / `hardware` / `x264` / an encoder id, `encoder_settings`: `{<encoder id>: {<libobs setting>: value}}` — the documented settings of each encoder the app wants used, applied over the engine's generic defaults (constant bitrate; x264 `veryfast`, `zerolatency`) | `{encoder, settings, hardware, audio_encoder, video_kbps, audio_kbps, keyint_sec}` — `settings`: what the encoder was opened with. Whatever is asked, the engine keeps the pipe's constraints: the bitrate and keyframe interval asked for, no B-frames, x264 `scenecut=0` |
+| `start_output` | `video_kbps` (default 6000), `audio_kbps` (160), `keyint_sec` (2), `encoder`: `auto` (hardware, else x264) / `hardware` / `x264` / an encoder id, `encoder_settings`: `{<encoder id>: {<libobs setting>: value}}` — the documented settings of each encoder the app wants used, applied over the engine's generic defaults (constant bitrate; x264 `veryfast`, `zerolatency`) | `{encoder, settings, hardware, audio_encoder, video_kbps, audio_kbps, keyint_sec}` — `settings`: what the encoder was opened with. Whatever is asked, the engine keeps the pipe's constraints: the bitrate and keyframe interval asked for, no B-frames, x264 `scenecut=0`. Optional `stream: {width, height, kbps}`: the stream's own smaller picture beside Program's — a second encoder of the same kind and tuning, scaled by libobs (area at half the canvas or less, bicubic above), sent as feed 2 and never dropped; answered in `stream` (`{width, height, kbps, encoder}`, or `{error}` and Program alone) |
 | `stop_output` | — | `{was_running, video_packets, audio_packets}` after the encoders drained |
-| `set_bitrate` | `kbps` | `{kbps, encoder}` — applies live, no restart |
+| `set_bitrate` | `kbps`, `target` (`program`, the default, or `stream`: the stream's own picture) | `{kbps, encoder, target}` — applies live, no restart |
 | `preview_feed` | `on`, `width` (854), `height` (480), `fps` (15), `preview_fps` (= `fps`; Preview's own rate — e.g. half of Program's), `kbps` (1000), `program` (true), `preview` (true), `encoder`, `gpu_scale` (false) | `{on, width, height, fps, preview_fps, kbps, program, preview}` — sending it again with other size/rate/bitrate restarts the running feeds |
 | `thumbnails` | `on`, `width` (256), `height` (144), `fps` (2), `format` (`rgba` or `i420`, default `rgba`), `only_changes` (false: when true an input's thumbnail is sent only if its picture changed since the last one sent; the first after `on` always goes) | `{on, width, height, fps, format, only_changes}` |
 | `projector` | `id` (the app's number for it), `on` (true), `content`: `program` / `preview`, `fit`: `contain` / `cover` / `stretch`, `display_id` (macOS: the CGDirectDisplayID — Electron's display id), `display {x, y, width, height}` (macOS: points, top-left origin, as Electron's display bounds; Windows: physical pixels, as `screen.dipToScreenRect`), `windowed` (false; true: a plain window of exactly `display`, for checks) | `{id, on, content, fit, width, height, scale, frames, display {x, y, width, height}}` — `on: false` → `{id, on: false, was_open}` |

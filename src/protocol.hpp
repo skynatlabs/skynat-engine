@@ -36,6 +36,7 @@ enum MsgType : uint8_t {
 enum FeedId : uint8_t {
 	FEED_PROGRAM = 0, // the Program monitor (scaled copy of the output)
 	FEED_PREVIEW = 1, // the Preview monitor (studio mode)
+	FEED_STREAM = 2,  // the stream's own picture (start_output "stream"): a broadcast, never dropped
 };
 
 // Overlay message flags (u32 at offset 24 of the overlay header).

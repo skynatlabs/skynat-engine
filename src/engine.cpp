@@ -1243,6 +1243,8 @@ static void wait_inactive(obs_output_t *out, int timeout_ms)
 
 void Engine::stop_program_output(PipeOutputStats *final_stats)
 {
+	stop_feed(feed_stream_);
+	stream_kbps_ = 0;
 	if (output_) {
 		obs_output_stop(output_);
 		wait_inactive(output_, 3000);
@@ -1306,6 +1308,48 @@ std::string Engine::cmd_start_output(obs_data_t *cmd)
 		throw CommandError(error);
 	}
 	video_kbps_ = kbps;
+	// The stream's own picture (the app's choice of size, e.g. 960x540 at a low bitrate): a
+	// second encoder of the same kind and tuning, scaled by libobs, sent as feed 2.
+	JsonObj stream_json;
+	bool stream_on = false;
+	if (has(cmd, "stream")) {
+		std::unique_ptr<obs_data_t, void (*)(obs_data_t *)> st(obs_data_get_obj(cmd, "stream"), obs_data_release);
+		struct obs_video_info ovi;
+		const bool have_video = obs_get_video_info(&ovi);
+		const uint32_t sw = (uint32_t)std::clamp<int64_t>(get_int(st.get(), "width", 0), 0, 7680) & ~1u;
+		const uint32_t sh = (uint32_t)std::clamp<int64_t>(get_int(st.get(), "height", 0), 0, 4320) & ~1u;
+		const uint32_t skbps = (uint32_t)std::clamp<int64_t>(get_int(st.get(), "kbps", kbps), 200, 100000);
+		if (have_video && sw >= 64 && sh >= 64 && sw <= ovi.base_width && sh <= ovi.base_height) {
+			std::string sid, serr;
+			feed_stream_.encoder = create_video_encoder("stream-h264", venc_id_, skbps, keyint, "high", tuning.get(), &sid, &serr);
+			if (feed_stream_.encoder) {
+				obs_encoder_set_scaled_size(feed_stream_.encoder, sw, sh);
+				obs_encoder_set_gpu_scale_type(feed_stream_.encoder, sw * 2 <= ovi.base_width ? OBS_SCALE_AREA : OBS_SCALE_BICUBIC);
+				obs_encoder_set_video(feed_stream_.encoder, obs_get_video());
+				obs_data_t *fs = obs_data_create();
+				obs_data_set_int(fs, "feed", FEED_STREAM);
+				feed_stream_.output = obs_output_create("skynat_feed_output", "stream", fs, nullptr);
+				obs_data_release(fs);
+				obs_output_set_video_encoder(feed_stream_.output, feed_stream_.encoder);
+				signal_handler_connect(obs_output_get_signal_handler(feed_stream_.output), "stop", output_stopped, this);
+				stream_on = obs_output_start(feed_stream_.output);
+				if (!stream_on) {
+					const char *e = obs_output_get_last_error(feed_stream_.output);
+					serr = std::string("the stream's encoder did not start") + (e ? std::string(": ") + e : "");
+					stop_feed(feed_stream_);
+				}
+			}
+			if (stream_on) {
+				stream_kbps_ = skbps;
+				stream_json.integer("width", sw).integer("height", sh).integer("kbps", skbps).str("encoder", sid);
+			} else {
+				blog(LOG_WARNING, "[skynat-engine] %s — the stream shares Program's picture", serr.c_str());
+				stream_json.str("error", serr);
+			}
+		} else {
+			stream_json.str("error", "the stream's size must be smaller than the canvas");
+		}
+	}
 	writer_.event(JsonObj().str("event", "output").str("name", "program").str("state", "started").dump());
 	// The settings the encoder was opened with (the app's, over the defaults).
 	obs_data_t *applied = obs_encoder_get_settings(venc_);
@@ -1319,6 +1363,7 @@ std::string Engine::cmd_start_output(obs_data_t *cmd)
 		.integer("video_kbps", kbps)
 		.integer("audio_kbps", akbps)
 		.integer("keyint_sec", keyint)
+		.raw("stream", has(cmd, "stream") ? stream_json.dump() : std::string("null"))
 		.dump();
 }
 
@@ -1338,15 +1383,21 @@ std::string Engine::cmd_set_bitrate(obs_data_t *cmd)
 {
 	if (!venc_)
 		throw CommandError("the output is not running");
-	const uint32_t kbps = (uint32_t)std::clamp<int64_t>(get_int(cmd, "kbps", video_kbps_), 200, 100000);
+	const bool stream = get_str(cmd, "target", "program") == "stream";
+	if (stream && !feed_stream_.encoder)
+		throw CommandError("the stream has no picture of its own");
+	const uint32_t kbps = (uint32_t)std::clamp<int64_t>(get_int(cmd, "kbps", stream ? stream_kbps_ : video_kbps_), 200, 100000);
 	obs_data_t *s = obs_data_create();
 	obs_data_set_int(s, "bitrate", kbps);
 	if (venc_id_.rfind("com.apple.videotoolbox", 0) == 0)
 		obs_data_set_int(s, "max_bitrate", kbps);
-	obs_encoder_update(venc_, s);
+	obs_encoder_update(stream ? feed_stream_.encoder : venc_, s);
 	obs_data_release(s);
-	video_kbps_ = kbps;
-	return JsonObj().integer("kbps", kbps).str("encoder", venc_id_).dump();
+	if (stream)
+		stream_kbps_ = kbps;
+	else
+		video_kbps_ = kbps;
+	return JsonObj().integer("kbps", kbps).str("encoder", venc_id_).str("target", stream ? "stream" : "program").dump();
 }
 
 void Engine::stop_feed(Feed &feed)
@@ -1581,7 +1632,7 @@ std::string Engine::stats_json()
 		.integer("frames_output", video ? video_output_get_total_frames(video) : 0)
 		.integer("frames_skipped", video ? video_output_get_skipped_frames(video) : 0)
 		.raw("output", out.dump())
-		.raw("feeds", JsonObj().raw("program", feed_json(feed_program_)).raw("preview", feed_json(feed_preview_)).dump())
+		.raw("feeds", JsonObj().raw("program", feed_json(feed_program_)).raw("preview", feed_json(feed_preview_)).raw("stream", feed_json(feed_stream_)).dump())
 		.raw("pcm", json_array(pcm))
 		.integer("pcm_unrouted", (int64_t)pcm_unknown_.load())
 		.integer("overlay_updates", (int64_t)overlay_updates_.load())

@@ -137,6 +137,8 @@ private:
 
 	Feed feed_program_;
 	Feed feed_preview_;
+	Feed feed_stream_;   // the stream's own smaller picture, beside Program's (start_output "stream")
+	uint32_t stream_kbps_ = 0;
 	std::string feed_params_;
 	std::unique_ptr<Thumbnails> thumbs_;
 	std::unique_ptr<Projectors> projectors_;

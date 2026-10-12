@@ -779,6 +779,23 @@ async function main() {
   const st720 = await client.stats();
   check(`configure: ${alt.w}x${alt.h} at 60 fps`, cfg.width === alt.w && cfg.fps_num === 60 && cfg720 && cfg720.width === alt.w && cfg720.height === alt.h && cfg720.fpsNum === 60 && st720.fps === 60,
     `${cfg720 ? `${cfg720.width}x${cfg720.height} ${cfg720.fpsNum}/${cfg720.fpsDen}` : 'no config'}, ${n720} packets`);
+  // The stream's own smaller picture beside Program's: a second encoder, scaled, as feed 2 —
+  // and its bitrate set by itself.
+  let sCfg = null, sPkts = 0;
+  const onSCfg = (c) => { if (c.feed === 2) sCfg = c; }, onSPkt = (p) => { if (p.feed === 2) sPkts++; };
+  client.on('feedConfig', onSCfg); client.on('feedPacket', onSPkt);
+  const sw = (Math.round(alt.w / 3) & ~1), sh = (Math.round(alt.h / 3) & ~1);
+  const withStream = await client.startOutput({ video_kbps: 3000, stream: { width: sw, height: sh, kbps: 800 } });
+  const streamUntil = Date.now() + (excusedRealtime ? 10000 : 2000);
+  while (Date.now() < streamUntil && !(sPkts > 30)) await sleep(20);
+  const sRate = await client.setBitrate(600, 'stream');
+  const stS = await client.stats();
+  await client.stopOutput();
+  client.off('feedConfig', onSCfg); client.off('feedPacket', onSPkt);
+  check('start_output "stream": a smaller picture of its own as feed 2, beside Program', withStream.stream && withStream.stream.width === sw && sCfg && sCfg.width === sw && sCfg.height === sh && sPkts > 30,
+    `${JSON.stringify(withStream.stream)}; feed 2 ${sCfg ? `${sCfg.width}x${sCfg.height}` : 'no config'}, ${sPkts} packets`);
+  check('…its bitrate set by itself (set_bitrate target "stream")', sRate.target === 'stream' && sRate.kbps === 600 && stS.feeds && stS.feeds.stream, JSON.stringify(sRate));
+
   let busy = '';
   await client.startOutput({ video_kbps: 3000 });
   try { await client.configure({ width: W, height: H, fps: 30 }); } catch (e) { busy = e.message; }
