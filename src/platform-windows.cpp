@@ -436,7 +436,7 @@ ProjectorWindow *open_projector_window(const ProjectorTarget &target, const std:
 		wc.style = CS_DBLCLKS;
 		wc.lpfnWndProc = projector_proc;
 		wc.hInstance = inst;
-		wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+		wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); // IDC_ARROW (its narrow form without UNICODE)
 		wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
 		wc.lpszClassName = kProjectorClass;
 		if (!RegisterClassExW(&wc)) {
