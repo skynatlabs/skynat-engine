@@ -21,6 +21,13 @@ namespace skynat {
 
 void register_engine_sources();
 
+// A clip's picture as it is coded: its HDR transfer (HLG or PQ) is not turned
+// into the canvas's light by libobs, so the signal reaches the filters after
+// it unchanged (the app's look-up table makes the picture of it). Off: libobs
+// converts as it always does.
+void set_signal_as_is(obs_source_t *source, bool on);
+bool signal_as_is(obs_source_t *source);
+
 // ---- overlay -------------------------------------------------------------
 // Copies a w x h rectangle (rows `stride` bytes apart) into the layer at
 // (x, y). `clear` empties the whole layer first.

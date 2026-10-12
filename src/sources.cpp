@@ -301,6 +301,59 @@ PcmStats pcm_stats(obs_source_t *pcm)
 }
 
 // ===========================================================================
+// signal as it is: an async video filter that marks each frame of a clip as
+// plain (non-HDR) video, so libobs keeps the coded values (its YUV-to-RGB
+// with the clip's own matrix still applies) instead of converting HLG or PQ.
+
+static const char *kAsIsName = "skynat-signal-as-is";
+
+static const char *as_is_name(void *)
+{
+	return "Signal as it is";
+}
+
+static void *as_is_create(obs_data_t *, obs_source_t *source)
+{
+	return source;
+}
+
+static void as_is_destroy(void *) {}
+
+static struct obs_source_frame *as_is_filter_video(void *, struct obs_source_frame *frame)
+{
+	if (frame && (frame->trc == VIDEO_TRC_HLG || frame->trc == VIDEO_TRC_PQ))
+		frame->trc = VIDEO_TRC_SRGB;
+	return frame;
+}
+
+void set_signal_as_is(obs_source_t *source, bool on)
+{
+	if (!source)
+		return;
+	obs_source_t *filter = obs_source_get_filter_by_name(source, kAsIsName);
+	if (on && !filter) {
+		filter = obs_source_create_private("skynat_signal_as_is", kAsIsName, nullptr);
+		if (filter) {
+			obs_source_filter_add(source, filter);
+			obs_source_release(filter);
+		}
+		return;
+	}
+	if (!on && filter)
+		obs_source_filter_remove(source, filter);
+	if (filter)
+		obs_source_release(filter);
+}
+
+bool signal_as_is(obs_source_t *source)
+{
+	obs_source_t *filter = source ? obs_source_get_filter_by_name(source, kAsIsName) : nullptr;
+	if (filter)
+		obs_source_release(filter);
+	return filter != nullptr;
+}
+
+// ===========================================================================
 
 void register_engine_sources()
 {
@@ -326,6 +379,16 @@ void register_engine_sources()
 	pcm.create = pcm_create;
 	pcm.destroy = pcm_destroy;
 	obs_register_source(&pcm);
+
+	struct obs_source_info as_is = {};
+	as_is.id = "skynat_signal_as_is";
+	as_is.type = OBS_SOURCE_TYPE_FILTER;
+	as_is.output_flags = OBS_SOURCE_ASYNC_VIDEO;
+	as_is.get_name = as_is_name;
+	as_is.create = as_is_create;
+	as_is.destroy = as_is_destroy;
+	as_is.filter_video = as_is_filter_video;
+	obs_register_source(&as_is);
 }
 
 } // namespace skynat

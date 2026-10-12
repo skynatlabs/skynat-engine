@@ -805,9 +805,12 @@ std::string Engine::cmd_add_source(obs_data_t *cmd)
 		thumbs_->add(id, obs_scene_get_source(s.wrapper));
 		if (type == "camera" && !get_bool(cmd, "audio", false))
 			obs_source_set_muted(s.source, true); // the app's mixer owns sound
-		if (type == "media")
+		if (type == "media") {
 			signal_handler_connect(obs_source_get_signal_handler(s.source), "media_ended", media_ended,
 					       &writer_);
+			if (get_str(cmd, "hdr") == "as_is")
+				set_signal_as_is(s.source, true);
+		}
 	} else if (type == "overlay") {
 		s.overlay_item = obs_scene_add(overlay_scene_, s.source);
 		struct vec2 pos;
@@ -899,6 +902,8 @@ std::string Engine::cmd_update_source(obs_data_t *cmd)
 			obs_data_set_bool(settings, "restart_on_activate", get_bool(cmd, "restart_on_activate", false));
 			changed = true;
 		}
+		if (has(cmd, "hdr"))
+			set_signal_as_is(s.source, get_str(cmd, "hdr") == "as_is");
 	} else if (s.type == "image") {
 		if (has(cmd, "path")) {
 			std::string path = get_str(cmd, "path");

@@ -706,6 +706,33 @@ async function main() {
   check('a clip smaller than the canvas is enlarged with bicubic (not bilinear)', up?.bicubic >= 1, JSON.stringify(up));
   await client.removeSource(6);
 
+  // An HDR clip (HLG, BT.2020): libobs turns the signal into the canvas's light; with hdr "as_is"
+  // the coded signal comes through unchanged (a 75 % grey stays 191) for the app's own table.
+  const hlg = join(OUT_DIR, 'hlg-grey.mp4');
+  if (!existsSync(hlg)) ffmpeg(['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0xbfbfbf:s=640x360:r=30', '-t', '2', '-vf', 'format=yuv420p', '-c:v', 'libx264',
+    '-color_range', 'tv', '-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', hlg]);
+  const hlgPx = [];
+  const onHlg = (t) => { if (t.id === 7 && t.format === 'rgba') hlgPx.push([...t.data.subarray((72 * t.width + 128) * 4, (72 * t.width + 128) * 4 + 3)]); };
+  client.on('thumbnail', onHlg);
+  await client.addSource({ id: 7, type: 'media', path: hlg, loop: true });
+  await client.thumbnails({ on: true, width: 256, height: 144, fps: 10 });
+  await sleep(1500);
+  const converted = hlgPx[hlgPx.length - 1] || [];
+  await client.updateSource({ id: 7, hdr: 'as_is' });
+  hlgPx.length = 0;
+  await sleep(1500);
+  const asIs = hlgPx[hlgPx.length - 1] || [];
+  await client.updateSource({ id: 7, hdr: 'convert' });
+  hlgPx.length = 0;
+  await sleep(1500);
+  const back = hlgPx[hlgPx.length - 1] || [];
+  client.off('thumbnail', onHlg);
+  await client.thumbnails({ on: false });
+  await client.removeSource(7);
+  check('HLG clip: libobs converts it (not the coded 191)…', converted.length === 3 && Math.abs(converted[1] - 191) > 8, converted.join(','));
+  check('…hdr "as_is": the coded signal as it is (191 ± 4)', asIs.length === 3 && asIs.every((v) => Math.abs(v - 191) <= 4), asIs.join(','));
+  check('…and converted again when it is taken off', back.length === 3 && Math.abs(back[1] - converted[1]) <= 3, back.join(','));
+
   // Change the canvas (outputs stopped), encode a moment at 60 fps on another size, and back
   // (1280x720; a third of the canvas on a CPU-rendered runner).
   const alt = softwareRenderer ? { w: (W / 3) & ~1, h: (H / 3) & ~1 } : { w: 1280, h: 720 };

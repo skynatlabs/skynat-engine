@@ -106,6 +106,8 @@ export interface AddSource {
   device?: string; device_name?: string; width?: number; height?: number; fps?: number; fast?: boolean; audio?: boolean;
   // media / image
   path?: string; loop?: boolean; hw_decode?: boolean; restart_on_activate?: boolean;
+  /** media: 'as_is' passes an HLG or PQ clip's coded signal unchanged (for an app-supplied LUT); 'convert' (default): libobs converts it. */
+  hdr?: 'as_is' | 'convert';
   // color
   color?: string;
   // overlay (also width/height)
