@@ -17,6 +17,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -544,6 +545,14 @@ void Engine::update_scale_filters()
 		uint32_t sw = obs_source_get_width(s.source), sh = obs_source_get_height(s.source);
 		if (!sw || !sh)
 			continue;
+		// A window waiting for the source's size, or a size that changed under it.
+		if (s.windowed && (sw != s.win_w || sh != s.win_h))
+			apply_window(s);
+		// A window is enlarged by however much of the picture it leaves out.
+		if (s.windowed && !s.rotate) {
+			sw = std::max(2u, (uint32_t)std::lround(sw * s.win[2]));
+			sh = std::max(2u, (uint32_t)std::lround(sh * s.win[3]));
+		}
 		// Turned a quarter (a phone's portrait video): fitted by its turned size.
 		if (s.rotate == 90 || s.rotate == 270)
 			std::swap(sw, sh);
@@ -712,7 +721,63 @@ bool Engine::apply_common(Source &s, obs_data_t *cmd)
 		obs_source_set_volume(s.source, (float)get_double(cmd, "volume", 1.0));
 	if (has(cmd, "muted"))
 		obs_source_set_muted(s.source, get_bool(cmd, "muted", false));
+	// "window": {x, y, w, h} — show that part of the picture (fractions of
+	// its width and height), fitted to the canvas like the whole of it; null
+	// for the whole picture again. libobs's scene-item crop.
+	// Also as text "x,y,w,h" (and "" for the whole picture), which is how a
+	// client that compares plain fields sends it.
+	if (has(cmd, "window") && s.wrapper_item) {
+		double x = 0, y = 0, ww = 1, wh = 1;
+		bool set = false;
+		obs_data_item_t *item = obs_data_item_byname(cmd, "window");
+		const enum obs_data_type t = item ? obs_data_item_gettype(item) : OBS_DATA_NULL;
+		obs_data_item_release(&item);
+		if (t == OBS_DATA_OBJECT) {
+			if (obs_data_t *w = obs_data_get_obj(cmd, "window")) {
+				x = get_double(w, "x", 0); y = get_double(w, "y", 0);
+				ww = get_double(w, "w", 1); wh = get_double(w, "h", 1);
+				obs_data_release(w);
+				set = true;
+			}
+		} else if (t == OBS_DATA_STRING) {
+			const std::string v = get_str(cmd, "window");
+			if (!v.empty()) {
+				if (std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &x, &y, &ww, &wh) != 4)
+					throw CommandError("window as text is \"x,y,w,h\"");
+				set = true;
+			}
+		}
+		if (set && !(ww > 0.02 && wh > 0.02 && x >= 0 && y >= 0 && x + ww <= 1.0001 && y + wh <= 1.0001))
+			throw CommandError("window must be inside the picture: x, y >= 0, w, h > 0.02, x + w <= 1, y + h <= 1");
+		s.windowed = set && !(x <= 0 && y <= 0 && ww >= 1 && wh >= 1);
+		s.win[0] = x; s.win[1] = y; s.win[2] = ww; s.win[3] = wh;
+		s.win_w = s.win_h = 0;
+		apply_window(s);
+	}
 	return true;
+}
+
+// The window as a crop of the source's own pixels. The source's size is known
+// only once it delivers frames (and may change): until then nothing is
+// cropped, and update_scale_filters applies it when the size arrives. Not for
+// a turned source (a phone's portrait video): its window would need turning too.
+void Engine::apply_window(Source &s)
+{
+	if (!s.wrapper_item || !s.source)
+		return;
+	struct obs_sceneitem_crop crop = {0, 0, 0, 0};
+	if (s.windowed && !s.rotate) {
+		const uint32_t sw = obs_source_get_width(s.source), sh = obs_source_get_height(s.source);
+		if (!sw || !sh)
+			return;
+		crop.left = (int)std::lround(s.win[0] * sw);
+		crop.top = (int)std::lround(s.win[1] * sh);
+		crop.right = std::max(0, (int)sw - crop.left - std::max(2, (int)std::lround(s.win[2] * sw)));
+		crop.bottom = std::max(0, (int)sh - crop.top - std::max(2, (int)std::lround(s.win[3] * sh)));
+		s.win_w = sw;
+		s.win_h = sh;
+	}
+	obs_sceneitem_set_crop(s.wrapper_item, &crop);
 }
 
 void Engine::apply_overlay_layout(Source &s, obs_data_t *cmd)
@@ -930,6 +995,7 @@ std::string Engine::cmd_update_source(obs_data_t *cmd)
 		if (has(cmd, "rotate") && s.wrapper_item) {
 			s.rotate = rotation_of(cmd);
 			fit_to_canvas(s.wrapper_item, s.rotate);
+			apply_window(s);
 		}
 	} else if (s.type == "image") {
 		if (has(cmd, "path")) {

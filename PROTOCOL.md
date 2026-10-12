@@ -228,6 +228,13 @@ Inputs (`camera`, `media`, `image`, `color`) are each fitted to the canvas (scal
 letterboxed) and can be put on Program, Preview, the feeds and thumbnails. Overlays always sit on
 top of Program.
 
+Any input may also carry `window` (on `add_source` or `update_source`): the part of its picture to
+show instead of all of it, as `{x, y, w, h}` or the text `"x,y,w,h"` (fractions of the picture's
+width and height; `null` or `""` for the whole picture again). It is libobs's scene-item crop,
+worked out in the source's own pixels once its size is known and again if the size changes, and the
+window is fitted to the canvas as the whole picture would be (enlarged with bicubic). Not applied to
+a turned (`rotate`) clip.
+
 ## Events (type 2)
 
 | event | fields |

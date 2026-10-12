@@ -63,6 +63,10 @@ private:
 		uint32_t audio_channel = 0;             // pcm: output channel
 		bool fast_camera = false;
 		int rotate = 0;                         // inputs: turned clockwise (0, 90, 180, 270) before fitting
+		// inputs: a window of the picture (fractions x, y, w, h) shown instead of all of it
+		bool windowed = false;
+		double win[4] = {0, 0, 1, 1};
+		uint32_t win_w = 0, win_h = 0;          // the source size the crop was worked out for
 	};
 
 	struct Feed {
@@ -98,6 +102,7 @@ private:
 	void update_scale_filters();
 	obs_data_t *camera_settings(obs_data_t *cmd, const std::string &device, bool *fast, std::string *error);
 	bool apply_common(Source &s, obs_data_t *cmd);
+	void apply_window(Source &s);
 	void apply_overlay_layout(Source &s, obs_data_t *cmd);
 	obs_encoder_t *create_video_encoder(const std::string &name, const std::string &want, uint32_t kbps,
 					    uint32_t keyint_sec, const char *profile, obs_data_t *overrides,
