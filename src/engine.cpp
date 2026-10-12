@@ -541,11 +541,16 @@ void Engine::update_scale_filters()
 		Source &s = kv.second;
 		if (!s.wrapper_item || !s.source || (s.type != "camera" && s.type != "media"))
 			continue;
-		const uint32_t sw = obs_source_get_width(s.source), sh = obs_source_get_height(s.source);
+		uint32_t sw = obs_source_get_width(s.source), sh = obs_source_get_height(s.source);
 		if (!sw || !sh)
 			continue;
+		// Turned a quarter (a phone's portrait video): fitted by its turned size.
+		if (s.rotate == 90 || s.rotate == 270)
+			std::swap(sw, sh);
 		const double k = std::min((double)opt_.width / sw, (double)opt_.height / sh);
-		const obs_scale_type want = k > 1.01 || k < 0.99 ? OBS_SCALE_BICUBIC : OBS_SCALE_DISABLE;
+		// Enlarged: bicubic. Made smaller: Lanczos (six taps a side — a portrait video at
+		// 0.56 kept its detail where bicubic's four softened it).
+		const obs_scale_type want = k > 1.01 ? OBS_SCALE_BICUBIC : k < 0.99 ? OBS_SCALE_LANCZOS : OBS_SCALE_DISABLE;
 		if (obs_sceneitem_get_scale_filter(s.wrapper_item) != want)
 			obs_sceneitem_set_scale_filter(s.wrapper_item, want);
 	}
@@ -1613,16 +1618,17 @@ std::string Engine::stats_json()
 		.integer("media_dropped", (int64_t)writer_.media_dropped());
 
 	// Cameras and clips scaled to the canvas, by filter (update_scale_filters).
-	int64_t bicubic = 0, area = 0;
+	int64_t bicubic = 0, area = 0, lanczos = 0;
 	for (const auto &kv : sources_) {
 		if (!kv.second.wrapper_item)
 			continue;
 		const obs_scale_type t = obs_sceneitem_get_scale_filter(kv.second.wrapper_item);
 		bicubic += t == OBS_SCALE_BICUBIC;
 		area += t == OBS_SCALE_AREA;
+		lanczos += t == OBS_SCALE_LANCZOS;
 	}
 	JsonObj scaled;
-	scaled.integer("bicubic", bicubic).integer("area", area);
+	scaled.integer("bicubic", bicubic).integer("area", area).integer("lanczos", lanczos);
 
 	JsonObj s;
 	s.number("render_ms", obs_get_average_frame_time_ns() / 1e6)

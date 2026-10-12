@@ -755,8 +755,8 @@ async function main() {
   const cfg = await client.configure({ width: alt.w, height: alt.h, fps: 60 });
   await client.addSource({ id: 8, type: 'media', path: clip, loop: true, ...(softwareRenderer ? { hw_decode: false } : {}) });
   let down = null;
-  for (let i = 0; i < 30 && !(down?.bicubic >= 1); i++) { down = (await client.stats()).scaled; await sleep(100); }
-  check('…and one bigger than the canvas made smaller with bicubic too', down?.bicubic >= 1, JSON.stringify(down));
+  for (let i = 0; i < 30 && !(down?.lanczos >= 1); i++) { down = (await client.stats()).scaled; await sleep(100); }
+  check('…and one bigger than the canvas made smaller with Lanczos', down?.lanczos >= 1, JSON.stringify(down));
   await client.removeSource(8);
   let cfg720 = null, n720 = 0;
   const onCfg = (c) => { cfg720 = c; }, onPkt = () => { n720++; };
