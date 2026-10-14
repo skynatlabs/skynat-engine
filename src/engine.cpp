@@ -641,6 +641,16 @@ std::string Engine::cmd_configure(obs_data_t *cmd)
 	if (!reset_video(w, h, num, den, &error))
 		throw CommandError(error);
 	obs_transition_set_size(transition_, w, h);
+	// The scene Program goes out through keeps the transition's old size
+	// after a canvas change (black Program): put the transition back in it.
+	if (program_glass_) {
+		obs_sceneitem_t *old_item = obs_scene_sceneitem_from_source(program_glass_, transition_);
+		if (old_item) {
+			obs_sceneitem_remove(old_item);
+			obs_sceneitem_release(old_item);
+		}
+		obs_scene_add(program_glass_, transition_);
+	}
 	for (auto &kv : sources_) {
 		if (kv.second.wrapper_item)
 			fit_to_canvas(kv.second.wrapper_item, kv.second.rotate);

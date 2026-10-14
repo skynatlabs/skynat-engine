@@ -233,7 +233,7 @@ async function main() {
   adapter = (adapterLine.match(/on adapter (.+?)(?: \(\d+\))?$/) || [])[1] || 'unknown';
   const cpuRenderer = /Software Renderer|Basic Render Driver/i.test(adapter);
   note('graphics adapter', adapter);
-  if (cpuRenderer && SOFTWARE_OK) {
+  if ((cpuRenderer && SOFTWARE_OK) || process.env.SKYNAT_ENGINE_TEST_SMALL === "1") {
     // A virtual machine without a GPU: the "GPU" is a software rasterizer on the
     // CPU (about 200 ms for one 1080p frame on GitHub's macOS runners), so
     // nothing could run in real time at 1080p. The checks run on a small canvas
