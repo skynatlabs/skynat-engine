@@ -13,7 +13,7 @@
 namespace skynat {
 
 constexpr uint32_t kProtocolVersion = 1;
-constexpr const char *kEngineVersion = "0.4.1";
+constexpr const char *kEngineVersion = "0.4.2";
 
 // Every message on both pipes: [u32 LE payload length][u8 type][payload].
 constexpr size_t kHeaderSize = 5;
@@ -31,7 +31,7 @@ enum MsgType : uint8_t {
 	MSG_FEED_CONFIG = 9,  // engine -> app: monitor feed avcC (feed byte first)
 	MSG_FEED_PACKET = 10, // engine -> app: monitor feed access unit (feed byte first)
 	MSG_THUMBNAIL = 11,   // engine -> app: small RGBA picture of one source
-	MSG_FRAME = 12,       // app -> engine: one video frame for a "frames" source (I420 or RGBA)
+	MSG_FRAME = 12,       // app -> engine: one video frame for a "frames" source (I420, RGBA or NV12)
 };
 
 enum FeedId : uint8_t {

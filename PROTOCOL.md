@@ -112,7 +112,7 @@ layer can be sent right after its `add_source` command.
 0   u32  frames source id (a source added with type "frames")
 4   u32  width
 8   u32  height
-12  u32  format   1: I420 (Y, then U, then V, tightly packed; even width and height) · 2: RGBA
+12  u32  format   1: I420 (Y, then U, then V, tightly packed; even width and height) · 2: RGBA · 3: NV12, video range (Y, then interleaved UV; even width and height) · 4: NV12, full range
 16  …    the pixels
 ```
 

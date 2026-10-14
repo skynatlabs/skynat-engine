@@ -408,6 +408,27 @@ bool frames_push(obs_source_t *src, uint32_t w, uint32_t h, uint32_t format, con
 		f.format = VIDEO_FORMAT_RGBA;
 		f.data[0] = const_cast<uint8_t *>(data);
 		f.linesize[0] = w * 4;
+	} else if (format == 3 || format == 4) {
+		// NV12 as a screen capture or a camera decodes it: Y, then interleaved
+		// UV — no conversion in the app. 3 = video range, 4 = full range.
+		if ((w & 1) || (h & 1)) {
+			*error = "NV12 needs even width and height";
+			return false;
+		}
+		const size_t y = (size_t)w * h;
+		if (size < y + y / 2) {
+			*error = "NV12 frame too short";
+			return false;
+		}
+		const bool full = format == 4;
+		f.format = VIDEO_FORMAT_NV12;
+		f.data[0] = const_cast<uint8_t *>(data);
+		f.data[1] = const_cast<uint8_t *>(data + y);
+		f.linesize[0] = w;
+		f.linesize[1] = w;
+		video_format_get_parameters_for_format(VIDEO_CS_709, full ? VIDEO_RANGE_FULL : VIDEO_RANGE_PARTIAL,
+						       VIDEO_FORMAT_NV12, f.color_matrix, f.color_range_min, f.color_range_max);
+		f.full_range = full;
 	} else {
 		*error = "unknown frame format";
 		return false;

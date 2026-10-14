@@ -158,8 +158,8 @@ export function encodeOverlay(id: number, x: number, y: number, w: number, h: nu
   return out;
 }
 
-/** One video frame for a `frames` source: format 1 = I420 (even width and height), 2 = RGBA. */
-export function encodeVideoFrame(id: number, width: number, height: number, format: 1 | 2, data: Uint8Array): Buffer {
+/** One video frame for a `frames` source: format 1 = I420 (even width and height), 2 = RGBA, 3 = NV12 video range, 4 = NV12 full range. */
+export function encodeVideoFrame(id: number, width: number, height: number, format: 1 | 2 | 3 | 4, data: Uint8Array): Buffer {
   const out = Buffer.allocUnsafe(HEADER_SIZE + 16 + data.byteLength);
   out.writeUInt32LE(16 + data.byteLength, 0);
   out[4] = MsgType.FRAME;
@@ -589,8 +589,10 @@ export class EngineClient {
   }
 
   /** A frame for a `frames` source; returns false when dropped (the next one will do). */
-  sendVideoFrame(id: number, width: number, height: number, format: 1 | 2, data: Uint8Array): boolean {
-    if (this.stdinBacklog > this.opts.maxStdinBacklog) return false;
+  sendVideoFrame(id: number, width: number, height: number, format: 1 | 2 | 3 | 4, data: Uint8Array): boolean {
+    // A live picture: once three frames are still waiting on the pipe this
+    // one is skipped rather than shown late (the engine keeps the last).
+    if (this.stdinBacklog > Math.min(this.opts.maxStdinBacklog, data.byteLength * 3 + 1_000_000)) return false;
     return this.write(encodeVideoFrame(id, width, height, format, data));
   }
 
