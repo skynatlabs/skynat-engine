@@ -345,8 +345,14 @@ async function main() {
       `${out.encoder} + ${out.audio_encoder}`);
   }
   check('the output says what its encoder was opened with', !!out.settings && out.settings.bitrate === 6000 && out.settings.keyint_sec === 2, `${out.encoder}: ${JSON.stringify(out.settings).slice(0, 160)}`);
-  const tOut = Date.now();
-  const at = (s) => sleep(Math.max(0, tOut + s * 1000 - Date.now()));
+  // Moments in the run are counted from the output's first video packet, not
+  // from start_output's answer: on a runner with no GPU the first frame can
+  // take seconds to appear, and a cut commanded before it would fall outside
+  // the file. The checks compare against the same reference (ptsOf below).
+  const at = async (s) => {
+    while (!firstPacketAt) await sleep(20);
+    await sleep(Math.max(0, firstPacketAt + s * 1000 - Date.now()));
+  };
 
   await client.previewFeed({ on: true, width: 854, height: 480, fps: 15, preview_fps: 10, kbps: 800 });
   await client.thumbnails({ on: true, width: 256, height: 144, fps: 4 });
