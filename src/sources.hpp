@@ -48,4 +48,9 @@ struct PcmStats {
 void pcm_push(obs_source_t *pcm, const float *interleaved, uint32_t frames, uint32_t delay_us);
 PcmStats pcm_stats(obs_source_t *pcm);
 
+// "frames": video the app decodes itself (a remote camera, a screen) handed in frame by frame.
+// format 1 = I420 (Y, then U, then V, tightly packed, even width and height); 2 = RGBA.
+bool frames_push(obs_source_t *frames, uint32_t width, uint32_t height, uint32_t format, const uint8_t *data,
+		 size_t size, std::string *error);
+
 } // namespace skynat

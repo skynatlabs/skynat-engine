@@ -106,6 +106,19 @@ the clear flag empties the layer. The engine copies the data in on its command t
 it to the GPU once on the next frame. Overlay messages are processed in order with commands, so a
 layer can be sent right after its `add_source` command.
 
+### 12 — video frame (app → engine)
+
+```
+0   u32  frames source id (a source added with type "frames")
+4   u32  width
+8   u32  height
+12  u32  format   1: I420 (Y, then U, then V, tightly packed; even width and height) · 2: RGBA
+16  …    the pixels
+```
+
+Read straight on the engine's reader thread; libobs copies the frame. Frames for an unknown id,
+or that do not match their size, are counted (`frames_bad` in `stats`) and dropped.
+
 ### 8 — PCM audio (app → engine)
 
 ```
@@ -218,8 +231,9 @@ reopens it).
 | type | fields | notes |
 |---|---|---|
 | `camera` | `device` (AVFoundation `uniqueID` / DirectShow id from `list_devices`) or `device_name`; `width`, `height`, `fps` (default: the canvas); `fast` (default true); `audio` (default false) | macOS "fast" path = zero-copy IOSurface textures, the device format closest to the wish; `fast: false` uses the AVFoundation "High" preset. Camera sound is muted unless `audio: true` (the app's mixer owns sound). The camera permission belongs to the parent app |
-| `media` | `path`, `loop` (true), `hw_decode` (true), `restart_on_activate` (false), `hdr` (`convert`, the default: libobs turns an HLG or PQ clip into the canvas's light; `as_is`: the coded signal unchanged — the YUV-to-RGB with the clip's own matrix only — for an app-supplied `lut` to make the picture; also on `update_source`), `rotate` (0: degrees clockwise, 0/90/180/270 — the file's own rotation, which libobs's media source does not apply; also on `update_source`) | FFmpeg media source; its sound is mixed into Program while it is on Program. Sends a `media` event when a non-looping file ends |
+| `media` | `path` — or `url` (a live stream: `rtmp://`, `srt://`; read with a small buffer and reconnected if it drops), `loop` (true), `hw_decode` (true), `restart_on_activate` (false), `hdr` (`convert`, the default: libobs turns an HLG or PQ clip into the canvas's light; `as_is`: the coded signal unchanged — the YUV-to-RGB with the clip's own matrix only — for an app-supplied `lut` to make the picture; also on `update_source`), `rotate` (0: degrees clockwise, 0/90/180/270 — the file's own rotation, which libobs's media source does not apply; also on `update_source`) | FFmpeg media source; its sound is mixed into Program while it is on Program. Sends a `media` event when a non-looping file ends |
 | `image` | `path` | PNG, JPEG, GIF, BMP, … |
+| `frames` | — | video the app decodes itself (a remote camera, a screen), sent as type 12 messages; fitted like any input |
 | `color` | `color`: `#rrggbb` or `#rrggbbaa` | fills the canvas |
 | `overlay` | `width`, `height` (default: the canvas), `x`, `y` (0), `visible` (true), `premultiplied` (false) | an RGBA layer above Program, fed with type 7 messages; later layers are on top |
 | `pcm` | — | an audio input fed with type 8 messages; always mixed into Program |

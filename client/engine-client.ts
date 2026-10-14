@@ -55,6 +55,7 @@ export const MsgType = {
   FEED_CONFIG: 9,
   FEED_PACKET: 10,
   THUMBNAIL: 11,
+  FRAME: 12,
 } as const;
 
 export const Feed = { PROGRAM: 0, PREVIEW: 1 } as const;
@@ -99,7 +100,7 @@ export interface MediaEvent { event: 'media'; id: number; state: 'ended' }
 export interface ShutdownEvent { event: 'shutdown'; reason: string }
 export type EngineEvent = ReadyEvent | ResultEvent | StatsEvent | ErrorEvent | LogEvent | OutputEvent | MediaEvent | ShutdownEvent;
 
-export type SourceType = 'camera' | 'media' | 'image' | 'color' | 'overlay' | 'pcm';
+export type SourceType = 'camera' | 'media' | 'image' | 'color' | 'overlay' | 'pcm' | 'frames';
 export interface AddSource {
   id: number;
   type: SourceType;
@@ -107,6 +108,8 @@ export interface AddSource {
   device?: string; device_name?: string; width?: number; height?: number; fps?: number; fast?: boolean; audio?: boolean;
   // media / image
   path?: string; loop?: boolean; hw_decode?: boolean; restart_on_activate?: boolean;
+  /** media: a live stream address (rtmp://, srt://) read instead of a file. */
+  url?: string;
   /** media: 'as_is' passes an HLG or PQ clip's coded signal unchanged (for an app-supplied LUT); 'convert' (default): libobs converts it. */
   hdr?: 'as_is' | 'convert';
   /** camera / media: turned clockwise (0, 90, 180, 270) before it is fitted to the canvas — a
@@ -152,6 +155,19 @@ export function encodeOverlay(id: number, x: number, y: number, w: number, h: nu
   out.writeUInt32LE(stride, 25);
   out.writeUInt32LE(flags, 29);
   Buffer.from(pixels.buffer, pixels.byteOffset, need).copy(out, HEADER_SIZE + 28);
+  return out;
+}
+
+/** One video frame for a `frames` source: format 1 = I420 (even width and height), 2 = RGBA. */
+export function encodeVideoFrame(id: number, width: number, height: number, format: 1 | 2, data: Uint8Array): Buffer {
+  const out = Buffer.allocUnsafe(HEADER_SIZE + 16 + data.byteLength);
+  out.writeUInt32LE(16 + data.byteLength, 0);
+  out[4] = MsgType.FRAME;
+  out.writeUInt32LE(id, 5);
+  out.writeUInt32LE(width, 9);
+  out.writeUInt32LE(height, 13);
+  out.writeUInt32LE(format, 17);
+  Buffer.from(data.buffer, data.byteOffset, data.byteLength).copy(out, HEADER_SIZE + 16);
   return out;
 }
 
@@ -570,6 +586,12 @@ export class EngineClient {
   sendOverlay(id: number, x: number, y: number, w: number, h: number, stride: number, rgba: Uint8Array, clear = false): boolean {
     if (this.stdinBacklog > this.opts.maxStdinBacklog) return false;
     return this.write(encodeOverlay(id, x, y, w, h, stride, rgba, clear ? OVERLAY_CLEAR : 0));
+  }
+
+  /** A frame for a `frames` source; returns false when dropped (the next one will do). */
+  sendVideoFrame(id: number, width: number, height: number, format: 1 | 2, data: Uint8Array): boolean {
+    if (this.stdinBacklog > this.opts.maxStdinBacklog) return false;
+    return this.write(encodeVideoFrame(id, width, height, format, data));
   }
 
   /** The app's mixer output: interleaved stereo float32, 48 kHz. */

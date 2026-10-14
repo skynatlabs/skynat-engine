@@ -127,6 +127,7 @@ private:
 	std::map<uint32_t, Source> sources_;
 	std::mutex pcm_mutex_; // the reader thread looks PCM sources up directly
 	std::map<uint32_t, obs_source_t *> pcm_sources_;
+	std::map<uint32_t, obs_source_t *> frame_sources_; // under pcm_mutex_, looked up by the reader thread
 
 	obs_source_t *transition_ = nullptr; // program (inside program_glass_ on output channel 0)
 	obs_scene_t *program_glass_ = nullptr; // channel 0: the transition, with the glass backdrop filter on it
@@ -168,6 +169,8 @@ private:
 	std::atomic<uint64_t> overlay_updates_{0};
 	std::atomic<uint64_t> pcm_messages_{0};
 	std::atomic<uint64_t> pcm_unknown_{0};
+	std::atomic<uint64_t> frames_in_{0};
+	std::atomic<uint64_t> frames_bad_{0};
 };
 
 } // namespace skynat

@@ -99,7 +99,7 @@ uint32_t parse_color(const std::string &s)
 
 bool is_input_type(const std::string &t)
 {
-	return t == "camera" || t == "media" || t == "image" || t == "color";
+	return t == "camera" || t == "media" || t == "image" || t == "color" || t == "frames";
 }
 
 bool is_number(obs_data_t *d, const char *key)
@@ -368,6 +368,33 @@ void Engine::on_message(uint8_t type, std::vector<uint8_t> &&payload)
 		obs_source_release(src);
 		return;
 	}
+	case MSG_FRAME: {
+		// Straight from the reader thread: libobs copies the frame in.
+		if (payload.size() < 16) {
+			frames_bad_++;
+			return;
+		}
+		const uint8_t *p = payload.data();
+		const uint32_t id = get_u32(p), w = get_u32(p + 4), h = get_u32(p + 8), fmt = get_u32(p + 12);
+		obs_source_t *src = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(pcm_mutex_);
+			auto it = frame_sources_.find(id);
+			if (it != frame_sources_.end())
+				src = obs_source_get_ref(it->second);
+		}
+		if (!src) {
+			frames_bad_++;
+			return;
+		}
+		std::string error;
+		if (frames_push(src, w, h, fmt, p + 16, payload.size() - 16, &error))
+			frames_in_++;
+		else
+			frames_bad_++;
+		obs_source_release(src);
+		return;
+	}
 	case MSG_COMMAND: {
 		std::string json(payload.begin(), payload.end());
 		platform::post_main([this, json]() { handle_command(json); });
@@ -553,7 +580,7 @@ void Engine::update_scale_filters()
 {
 	for (auto &kv : sources_) {
 		Source &s = kv.second;
-		if (!s.wrapper_item || !s.source || (s.type != "camera" && s.type != "media"))
+		if (!s.wrapper_item || !s.source || (s.type != "camera" && s.type != "media" && s.type != "frames"))
 			continue;
 		uint32_t sw = obs_source_get_width(s.source), sh = obs_source_get_height(s.source);
 		if (!sw || !sh)
@@ -850,13 +877,29 @@ std::string Engine::cmd_add_source(obs_data_t *cmd)
 				.dump();
 	} else if (type == "media") {
 		std::string path = get_str(cmd, "path");
-		if (path.empty())
-			throw CommandError("media needs \"path\"");
-		if (!os_file_exists(path.c_str()))
-			throw CommandError("file not found: " + path);
+		const std::string url = get_str(cmd, "url");
 		settings = obs_data_create();
-		obs_data_set_bool(settings, "is_local_file", true);
-		obs_data_set_string(settings, "local_file", path.c_str());
+		if (!url.empty()) {
+			// A live stream (the app's own RTMP server, an SRT or RTMP address):
+			// FFmpeg reads it, keeps a small buffer and reconnects if it drops.
+			obs_data_set_bool(settings, "is_local_file", false);
+			obs_data_set_string(settings, "input", url.c_str());
+			obs_data_set_string(settings, "input_format", "");
+			obs_data_set_int(settings, "buffering_mb", 1);
+			obs_data_set_int(settings, "reconnect_delay_sec", 1);
+			obs_data_set_bool(settings, "seekable", false);
+		} else {
+			if (path.empty()) {
+				obs_data_release(settings);
+				throw CommandError("media needs \"path\" or \"url\"");
+			}
+			if (!os_file_exists(path.c_str())) {
+				obs_data_release(settings);
+				throw CommandError("file not found: " + path);
+			}
+			obs_data_set_bool(settings, "is_local_file", true);
+			obs_data_set_string(settings, "local_file", path.c_str());
+		}
 		obs_data_set_bool(settings, "looping", get_bool(cmd, "loop", true));
 		obs_data_set_bool(settings, "restart_on_activate", get_bool(cmd, "restart_on_activate", false));
 		obs_data_set_bool(settings, "hw_decode", get_bool(cmd, "hw_decode", true));
@@ -878,6 +921,9 @@ std::string Engine::cmd_add_source(obs_data_t *cmd)
 		obs_data_set_int(settings, "width", opt_.width);
 		obs_data_set_int(settings, "height", opt_.height);
 		obs_id = "color_source";
+	} else if (type == "frames") {
+		settings = obs_data_create();
+		obs_id = "skynat_frames";
 	} else if (type == "overlay") {
 		settings = obs_data_create();
 		obs_data_set_int(settings, "width", get_int(cmd, "width", opt_.width));
@@ -906,6 +952,10 @@ std::string Engine::cmd_add_source(obs_data_t *cmd)
 		thumbs_->add(id, obs_scene_get_source(s.wrapper));
 		if (type == "camera" && !get_bool(cmd, "audio", false))
 			obs_source_set_muted(s.source, true); // the app's mixer owns sound
+		if (type == "frames") {
+			std::lock_guard<std::mutex> lock(pcm_mutex_);
+			frame_sources_[id] = s.source;
+		}
 		if (type == "media") {
 			signal_handler_connect(obs_source_get_signal_handler(s.source), "media_ended", media_ended,
 					       &writer_);
@@ -1056,6 +1106,10 @@ void Engine::remove_source_internal(Source &s)
 	}
 	if (thumbs_)
 		thumbs_->remove(s.id);
+	if (s.type == "frames") {
+		std::lock_guard<std::mutex> lock(pcm_mutex_);
+		frame_sources_.erase(s.id);
+	}
 	if (s.type == "pcm") {
 		{
 			std::lock_guard<std::mutex> lock(pcm_mutex_);
@@ -1802,6 +1856,8 @@ std::string Engine::stats_json()
 		.raw("pcm", json_array(pcm))
 		.integer("pcm_unrouted", (int64_t)pcm_unknown_.load())
 		.integer("overlay_updates", (int64_t)overlay_updates_.load())
+		.integer("frames_in", (int64_t)frames_in_.load())
+		.integer("frames_bad", (int64_t)frames_bad_.load())
 		.integer("thumbnails_sent", thumbs_ ? (int64_t)thumbs_->sent() : 0)
 		.integer("thumbnails_unchanged", thumbs_ ? (int64_t)thumbs_->unchanged() : 0)
 		.raw("projectors", projectors_ ? projectors_->list_json() : std::string("[]"))

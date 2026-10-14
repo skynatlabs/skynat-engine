@@ -355,8 +355,78 @@ bool signal_as_is(obs_source_t *source)
 
 // ===========================================================================
 
+// ---------------------------------------------------------------------------
+// frames: an async video input fed by the app (MSG_FRAME)
+// ---------------------------------------------------------------------------
+
+static const char *frames_name(void *)
+{
+	return "Skynat frames";
+}
+static void *frames_create(obs_data_t *, obs_source_t *source)
+{
+	return source;
+}
+static void frames_destroy(void *) {}
+
+bool frames_push(obs_source_t *src, uint32_t w, uint32_t h, uint32_t format, const uint8_t *data, size_t size,
+		 std::string *error)
+{
+	if (!src || !w || !h || w > 8192 || h > 8192) {
+		*error = "bad frame size";
+		return false;
+	}
+	struct obs_source_frame f = {};
+	f.width = w;
+	f.height = h;
+	f.timestamp = os_gettime_ns();
+	if (format == 1) {
+		if ((w & 1) || (h & 1)) {
+			*error = "I420 needs even width and height";
+			return false;
+		}
+		const size_t y = (size_t)w * h, c = y / 4;
+		if (size < y + 2 * c) {
+			*error = "I420 frame too short";
+			return false;
+		}
+		f.format = VIDEO_FORMAT_I420;
+		f.data[0] = const_cast<uint8_t *>(data);
+		f.data[1] = const_cast<uint8_t *>(data + y);
+		f.data[2] = const_cast<uint8_t *>(data + y + c);
+		f.linesize[0] = w;
+		f.linesize[1] = w / 2;
+		f.linesize[2] = w / 2;
+		video_format_get_parameters_for_format(VIDEO_CS_709, VIDEO_RANGE_PARTIAL, VIDEO_FORMAT_I420,
+						       f.color_matrix, f.color_range_min, f.color_range_max);
+		f.full_range = false;
+	} else if (format == 2) {
+		if (size < (size_t)w * h * 4) {
+			*error = "RGBA frame too short";
+			return false;
+		}
+		f.format = VIDEO_FORMAT_RGBA;
+		f.data[0] = const_cast<uint8_t *>(data);
+		f.linesize[0] = w * 4;
+	} else {
+		*error = "unknown frame format";
+		return false;
+	}
+	obs_source_output_video(src, &f); // libobs copies the frame
+	return true;
+}
+
 void register_engine_sources()
 {
+	struct obs_source_info frames = {};
+	frames.id = "skynat_frames";
+	frames.type = OBS_SOURCE_TYPE_INPUT;
+	frames.output_flags = OBS_SOURCE_ASYNC_VIDEO;
+	frames.get_name = frames_name;
+	frames.create = frames_create;
+	frames.destroy = frames_destroy;
+	obs_register_source(&frames);
+
 	struct obs_source_info overlay = {};
 	overlay.id = "skynat_overlay";
 	overlay.type = OBS_SOURCE_TYPE_INPUT;
